@@ -325,7 +325,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send(404, {"error": "not found"})
 
     def do_POST(self):
-        global live
+        global live, printer_model
         if self.path == "/api/scan":
             opts = self.read_json()
             dpi = int(opts.get("dpi", 300))
@@ -342,6 +342,8 @@ class Handler(BaseHTTPRequestHandler):
                                   cancel=cancel_scan, progress=live)
             except hpscan.Cancelled:
                 return self.send(200, {"cancelled": True})
+            except hpscan.Aborted:
+                return self.send(200, {"reset": True})
             except Exception as e:
                 return self.send(500, {"error": str(e)})
             finally:
@@ -380,6 +382,23 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/cancel":
             cancel_scan.set()
             return self.send(200, {"ok": True})
+
+        if self.path == "/api/reset":
+            # Make whatever holds the USB link (a stuck scan, a status check) give up, take the
+            # link, then reset the scanner. Nothing else can talk to it until this finishes.
+            hpscan.abort.set()
+            cancel_scan.set()
+            got = usb_lock.acquire(timeout=10)
+            hpscan.abort.clear()
+            if not got:
+                return self.send(503, {"error": "The scanner is still busy; try again in a moment"})
+            try:
+                state, printer_model = hpscan.reset_scanner()
+                return self.send(200, {"state": state, "model": printer_model})
+            except Exception as e:
+                return self.send(500, {"error": f"Reset failed: {e}. Try turning the printer off and on."})
+            finally:
+                usb_lock.release()
 
         if self.path == "/api/export":
             # {names, format: "jpeg"|"pdf", quality: 1-95 or null for original, sizeOnly}

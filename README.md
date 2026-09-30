@@ -69,6 +69,7 @@ To use a different port: `PORT=9000 ./run.sh`.
 
 ## Troubleshooting
 
+- **Stuck in the middle of a scan, or scans keep failing:** tap the **↻ reset** button next to the status (top right). It stops any scan, resets the USB connection, clears the printer's open scan jobs, and waits until the scanner is ready. If that doesn't help, turn the printer off and on.
 - **`Address already in use`:** the app is already running (maybe in another Terminal window). Use that one, or stop it with `pkill -f server.py` and run `./run.sh` again.
 - **`Not found` / "No printer" in the app:** check the USB cable and that the printer is on. Only one program can use the printer at a time, so quit other scan tools, and stop the app before running `./run.sh --check`. If it still isn't found, your model probably doesn't use LEDM over USB.
 - **The phone can't open the page:** make sure the phone is on the same Wi-Fi (not mobile data), and use the IP address rather than `.local`. If macOS asks whether Python may accept incoming connections, allow it.

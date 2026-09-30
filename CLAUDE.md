@@ -29,6 +29,8 @@ It prints the LAN URL (IP and `.local`; some Android phones can't resolve `.loca
 - **Progress**: the JPEG sets a restart interval of one MCU row, so counting `FFD0–FFD7` markers gives exact progress (`ScanProgress`). `/api/live.jpg` serves the partial JPEG for the live preview.
 - The printer accepts **any dpi from 75 to 1200** even though ScanCaps lists only 75/100/200/300/600/1200. It resamples in firmware.
 - It returns **503** to a new job while the head is still returning after a scan, so `scan()` waits for `Idle` first.
+- **Stale replies desync everything.** A reply that isn't fully read (timeout, error, or two processes on the device at once) stays in the IN pipe and gets taken as the answer to the next request. `LedmUsb` drains the pipe every time it opens; keep that.
+- **Reset** (`POST /api/reset`, the ↻ button): sets `hpscan.abort` so any in-flight conversation raises `Aborted` and releases the USB lock, then `reset_scanner()` does a USB clear-halt + device reset (≈0.1 s on macOS, the printer reconnects at once), cancels scan jobs still open in `/Jobs/JobList`, and waits for Idle. A scan cut short returns `{"reset": true}`. Mid-reply stalls give up after `STALL_SECONDS` (45 s) instead of the 15-minute overall timeout.
 - Timing: A4 takes about 8 s at 300 dpi and about 70 s at 600 dpi. The warm-up before data flows is about 4 s.
 
 ## Crop

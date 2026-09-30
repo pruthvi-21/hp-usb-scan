@@ -1,10 +1,18 @@
 """Scan from an HP printer over USB using HP's LEDM protocol (HTTP requests over a vendor USB
 interface, class FF/CC/00). Works with HP all-in-ones whose USB device ID lists LEDM on that
 interface (LEDMDIS:...USB#FF#CC#00...); tested on the DeskJet 2300 series."""
-import math, os, re, struct, sys, time
+import math, os, re, struct, sys, threading, time
 import usb.core, usb.util, usb.backend.libusb1
 
 HP_VENDOR = 0x03F0
+STALL_SECONDS = 45  # give up if the printer sends nothing for this long in the middle of a reply
+
+# Set by reset_scanner's caller to make any in-flight USB conversation give up at once
+abort = threading.Event()
+
+
+class Aborted(Exception):
+    """The conversation was abandoned because the scanner is being reset."""
 LIBUSB_PATHS = ["/opt/homebrew/lib/libusb-1.0.dylib", "/usr/local/lib/libusb-1.0.dylib"]
 
 
@@ -60,6 +68,19 @@ class LedmUsb:
         self.ep_in = next(e for e in self.intf if is_bulk(e) and direction(e) == usb.util.ENDPOINT_IN)
         self.buf = b""
         self.on_wait = None  # called while waiting for data, e.g. to send a cancel mid-download
+        self.drain()
+
+    def drain(self):
+        """Throw away anything left in the printer's reply pipe. A reply that was never fully
+        read (a timeout, an error, another program) would otherwise be taken as the answer to
+        the next request, and every request after it would be out of step."""
+        for _ in range(64):
+            try:
+                if not self.ep_in.read(65536, timeout=100):
+                    break
+            except usb.core.USBTimeoutError:
+                break
+        self.buf = b""
 
     @staticmethod
     def _has_ledm(dev):
@@ -71,7 +92,12 @@ class LedmUsb:
         usb.util.dispose_resources(self.dev)
 
     def _fill(self, deadline):
+        waiting_since = time.time()
         while time.time() < deadline:
+            if abort.is_set():
+                raise Aborted("scanner reset")
+            if time.time() - waiting_since > STALL_SECONDS:
+                raise TimeoutError("the scanner stopped sending data; try Reset")
             if self.on_wait:
                 self.on_wait()
             try:
@@ -129,6 +155,55 @@ class LedmUsb:
         else:
             data = self._read_exact(int(headers.get("content-length", 0)), deadline)
         return status, headers, data
+
+
+def _open(timeout=15):
+    """Open the printer, retrying while it reconnects (e.g. right after a USB reset)."""
+    end = time.time() + timeout
+    while True:
+        try:
+            return LedmUsb()
+        except (usb.core.USBError, RuntimeError):
+            if time.time() > end:
+                raise
+            time.sleep(0.5)
+
+
+def reset_scanner():
+    """Get a stuck scanner going again: reset the USB link (clears stalled transfers and any
+    half-read replies), cancel scan jobs the printer still has open, and wait for Idle.
+    Returns (state, model). Callers must stop other conversations first (see `abort`)."""
+    s = _open()
+    try:
+        for ep in (s.ep_in, s.ep_out):
+            s.dev.clear_halt(ep)
+        s.dev.reset()
+    except usb.core.USBError:
+        pass  # a reset that fails still leaves the job cancel below worth trying
+    finally:
+        try:
+            s.close()
+        except usb.core.USBError:
+            pass
+
+    s = _open()
+    try:
+        _, _, jobs = s.request("GET", "/Jobs/JobList", timeout=15)
+        for url, state in re.findall(rb"<j:JobUrl>([^<]+)</j:JobUrl>\s*<j:JobCategory>Scan</j:JobCategory>"
+                                     rb"\s*<j:JobState>(\w+)</j:JobState>", jobs):
+            if state not in (b"Completed", b"Canceled", b"Aborted"):
+                s.request("PUT", url.decode(), CANCEL_JOB, timeout=15)
+        state = "Unknown"
+        for _ in range(40):  # the head may still be returning
+            _, _, data = s.request("GET", "/Scan/Status", timeout=10)
+            m = re.search(rb"<ScannerState>(\w+)", data)
+            state = m.group(1).decode() if m else "Unknown"
+            if state == "Idle":
+                break
+            time.sleep(0.5)
+        return state, s.model
+    finally:
+        s.close()
 
 
 def scanner_info():
