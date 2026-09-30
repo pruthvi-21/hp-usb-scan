@@ -1,6 +1,6 @@
 """HP USB Scan: a small web app for scanning from an HP printer connected to this Mac over USB
 (HP's LEDM protocol, see hpscan.py). Open it from your phone on the same Wi-Fi."""
-import io, json, math, os, re, socket, struct, threading, time
+import errno, io, json, math, os, re, socket, sys, struct, threading, time
 from datetime import datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import quote
@@ -443,8 +443,18 @@ if __name__ == "__main__":
         ip = probe.getsockname()[0]
     except OSError:
         ip = None
+    try:
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    except OSError as e:
+        if e.errno != errno.EADDRINUSE:
+            raise
+        sys.exit(f"HP USB Scan is already running (port {PORT} is in use), so there's nothing to start.\n"
+                 f"Open http://{ip or host}:{PORT}, or stop the other copy with:  pkill -f server.py")
     print("HP USB Scan is running. On your phone (same Wi-Fi) open:")
     if ip:
         print(f"    http://{ip}:{PORT}")
     print(f"    http://{host}:{PORT}")
-    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopped.")
