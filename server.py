@@ -1,4 +1,5 @@
-"""Tiny web app for scanning from the HP DeskJet over USB. Open it from your phone."""
+"""HP USB Scan: a small web app for scanning from an HP printer connected to this Mac over USB
+(HP's LEDM protocol, see hpscan.py). Open it from your phone on the same Wi-Fi."""
 import io, json, math, os, re, socket, struct, threading, time
 from datetime import datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -19,6 +20,7 @@ titles_lock = threading.Lock()
 usb_lock = threading.Lock()  # only one USB conversation at a time
 cancel_scan = threading.Event()
 live = None  # hpscan.ScanProgress of the scan in flight
+printer_model = None  # last model name seen, reported while the USB link is busy
 os.makedirs(ORIGINALS, exist_ok=True)
 
 
@@ -279,16 +281,18 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(n) or b"{}")
 
     def do_GET(self):
+        global printer_model
         if self.path in ("/", "/index.html"):
             with open(os.path.join(ROOT, "index.html"), "rb") as f:
                 return self.send(200, f.read(), "text/html; charset=utf-8")
         if self.path == "/api/status":
             if live:
-                return self.send(200, {"connected": True, "state": "Scanning"})
+                return self.send(200, {"connected": True, "state": "Scanning", "model": printer_model})
             if not usb_lock.acquire(timeout=3):  # another status check or a scan just starting
-                return self.send(200, {"connected": True, "state": "Busy"})
+                return self.send(200, {"connected": True, "state": "Busy", "model": printer_model})
             try:
-                return self.send(200, {"connected": True, "state": hpscan.scanner_state()})
+                state, printer_model = hpscan.scanner_info()
+                return self.send(200, {"connected": True, "state": state, "model": printer_model})
             except Exception as e:
                 return self.send(200, {"connected": False, "error": str(e)})
             finally:
@@ -420,7 +424,7 @@ if __name__ == "__main__":
         ip = probe.getsockname()[0]
     except OSError:
         ip = None
-    print("Scanner app running. On your phone (same Wi-Fi) open:")
+    print("HP USB Scan is running. On your phone (same Wi-Fi) open:")
     if ip:
         print(f"    http://{ip}:{PORT}")
     print(f"    http://{host}:{PORT}")

@@ -1,4 +1,6 @@
-"""Scan from an HP DeskJet 2300 over USB using HP's LEDM (HTTP-over-USB) protocol."""
+"""Scan from an HP printer over USB using HP's LEDM protocol (HTTP requests over a vendor USB
+interface, class FF/CC/00). Works with HP all-in-ones whose USB device ID lists LEDM on that
+interface (LEDMDIS:...USB#FF#CC#00...); tested on the DeskJet 2300 series."""
 import math, os, re, struct, sys, time
 import usb.core, usb.util, usb.backend.libusb1
 
@@ -43,10 +45,15 @@ class LedmUsb:
         be = usb.backend.libusb1.get_backend(find_library=_find_libusb)
         self.dev = usb.core.find(idVendor=HP_VENDOR, custom_match=self._has_ledm, backend=be)
         if self.dev is None:
-            raise RuntimeError("HP scanner not found on USB")
+            raise RuntimeError("No compatible HP printer found on USB")
         cfg = self.dev.get_active_configuration()
         self.intf = next(i for i in cfg if (i.bInterfaceClass, i.bInterfaceSubClass) == (0xFF, 0xCC))
         usb.util.claim_interface(self.dev, self.intf.bInterfaceNumber)
+        try:
+            product = usb.util.get_string(self.dev, self.dev.iProduct) or "printer"
+        except (usb.core.USBError, ValueError):
+            product = "printer"
+        self.model = product if product.upper().startswith("HP") else "HP " + product
         is_bulk = lambda e: usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK
         direction = lambda e: usb.util.endpoint_direction(e.bEndpointAddress)
         self.ep_out = next(e for e in self.intf if is_bulk(e) and direction(e) == usb.util.ENDPOINT_OUT)
@@ -124,13 +131,13 @@ class LedmUsb:
         return status, headers, data
 
 
-def scanner_state():
-    """Return the scanner state (e.g. "Idle", "BusyWithScanJob")."""
+def scanner_info():
+    """Return (scanner state, e.g. "Idle" or "BusyWithScanJob", and the printer's model name)."""
     s = LedmUsb()
     try:
         _, _, data = s.request("GET", "/Scan/Status", timeout=10)
         m = re.search(rb"<ScannerState>(\w+)", data)
-        return m.group(1).decode() if m else "Unknown"
+        return (m.group(1).decode() if m else "Unknown"), s.model
     finally:
         s.close()
 
@@ -269,6 +276,13 @@ def scan(dpi=300, color=True, size="a4", content="Document", log=print, cancel=N
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--check"]:  # is a compatible printer connected?
+        try:
+            state, model = scanner_info()
+            print(f"Compatible: {model} (scanner {state})")
+        except Exception as e:
+            sys.exit(f"Not found: {e}")
+        sys.exit(0)
     out = sys.argv[1] if len(sys.argv) > 1 else "scan.jpg"
     dpi = int(sys.argv[2]) if len(sys.argv) > 2 else 300
     img = scan(dpi=dpi)

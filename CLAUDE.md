@@ -1,6 +1,6 @@
-# Printer scanner
+# HP USB Scan
 
-A local web app for scanning from a USB-connected **HP DeskJet 2300** (print is broken, scanning works) from a phone. The Mac is the bridge: it talks to the scanner over USB and serves a page to phones on the same Wi-Fi.
+A local web app for scanning from an **HP printer connected to a Mac over USB**, using HP's LEDM protocol, from a phone. The Mac is the bridge: it talks to the scanner over USB and serves a page to phones on the same Wi-Fi. Built for and tested on the user's **HP DeskJet 2300 series** (its print side is broken; scanning works), but nothing is model-specific: the printer is found by HP's vendor ID plus the LEDM USB interface (`FF/CC/00`). `hpscan.py --check` reports whether a connected printer is compatible.
 
 ## Run
 

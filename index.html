@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#000000">
 <meta name="color-scheme" content="dark">
-<title>Scanner</title>
+<title>HP USB Scan</title>
 <style>
   /* Boxy Material 3 look, matching Libreel's AppShapesBoxy: 2px controls, 4px surfaces. Dark only. */
   :root {
@@ -27,6 +27,10 @@
   .gallery { padding: 0 16px 120px; }
   header { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 16px; }
   h1 { font-size: 22px; font-weight: 500; margin: 0; }
+  .brand { min-width: 0; }
+  .brand .model { font-size: 13px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .brand .model:empty { display: none; }
   .status { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
   .dot { width: 8px; height: 8px; border-radius: 1px; background: var(--muted); }
   .dot.ok { background: var(--ok); } .dot.bad { background: var(--error); } .dot.busy { background: var(--warn); }
@@ -252,7 +256,10 @@
 <div class="layout" id="app">
   <main class="controls">
     <header>
-      <h1>Scanner</h1>
+      <div class="brand">
+        <h1>HP USB Scan</h1>
+        <div class="model" id="model"></div>
+      </div>
       <div class="status"><span class="dot" id="dot"></span><span id="statusText">Checking…</span></div>
     </header>
 
@@ -418,7 +425,8 @@ async function refreshStatus() {
     const s = await (await fetch("/api/status")).json();
     if (busy) return;
     $("dot").className = "dot " + (!s.connected ? "bad" : s.state === "Idle" ? "ok" : "busy");
-    $("statusText").textContent = !s.connected ? "Printer not found" : s.state === "Idle" ? "Ready"
+    $("model").textContent = s.connected ? s.model || "" : "Connect an HP printer over USB";
+    $("statusText").textContent = !s.connected ? "No printer" : s.state === "Idle" ? "Ready"
       : s.state === "Scanning" ? "Scanning" : "Busy";
     $("scanBtn").disabled = !s.connected || s.state === "Scanning";
     // Someone else (another phone, the Mac) is scanning: show it in the list too
