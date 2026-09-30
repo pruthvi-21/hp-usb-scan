@@ -285,7 +285,8 @@ class Handler(BaseHTTPRequestHandler):
             if not images:
                 return self.send(400, {"error": "no scans selected"})
             pdf = jpegs_to_pdf(images, [jpeg_dpi(d) for d in images])
-            fname = datetime.now().strftime("scans-%Y%m%d-%H%M%S.pdf")
+            fname = (names[0][:-4] + ".pdf" if len(names) == 1
+                     else datetime.now().strftime("scans-%Y%m%d-%H%M%S.pdf"))
             return self.send(200, pdf, "application/pdf",
                              {"Content-Disposition": f'attachment; filename="{fname}"'})
         self.send(404, {"error": "not found"})
