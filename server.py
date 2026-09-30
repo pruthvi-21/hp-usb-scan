@@ -176,12 +176,28 @@ def crop_source(name):
     return orig if os.path.exists(orig) else os.path.join(SCANS, name)
 
 
+MIN_ANGLE = math.radians(8)  # sharpest crop corner allowed; keep in sync with index.html
+
+
+def is_convex(pts):
+    """True if the TL/TR/BR/BL corners (pixels) turn the same way at every corner, by at
+    least MIN_ANGLE, so no corner has crossed the diagonal of its neighbours."""
+    for i in range(4):
+        a, b, c = pts[i], pts[(i + 1) % 4], pts[(i + 2) % 4]
+        e1, e2 = (b[0] - a[0], b[1] - a[1]), (c[0] - b[0], c[1] - b[1])
+        if e1[0] * e2[1] - e1[1] * e2[0] < math.sin(MIN_ANGLE) * math.hypot(*e1) * math.hypot(*e2):
+            return False
+    return True
+
+
 def render_crop(source, corners):
     """Crop `source` to the quadrilateral `corners` (fractions, TL/TR/BR/BL), straightening it
     into a rectangle. Returns (image, dpi, corners in fractions actually used)."""
     with Image.open(source) as im:
         w, h = im.size
         pts = [(min(max(x, 0), 1) * w, min(max(y, 0), 1) * h) for x, y in corners]
+        if not is_convex(pts):
+            raise ValueError("crop corners must form a convex shape")
         tl, tr, br, bl = pts
         dist = lambda p, q: math.hypot(p[0] - q[0], p[1] - q[1])
         out_w = round(max(dist(tl, tr), dist(bl, br)))

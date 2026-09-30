@@ -413,7 +413,8 @@ async function loadScans() {
 
 
 // ---------- Cropper ----------
-const FULL = [[0, 0], [1, 0], [1, 1], [0, 1]];  // corners: top-left, top-right, bottom-right, bottom-left
+const FULL = [[0, 0], [1, 0], [1, 1], [0, 1]];
+const MIN_ANGLE = 8 * Math.PI / 180;  // sharpest corner allowed; keep in sync with server.py  // corners: top-left, top-right, bottom-right, bottom-left
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
 // Crop area over an image with four independently draggable corners. Edge handles move
@@ -474,9 +475,10 @@ function createCropper(host, src, initial, onChange) {
     if (!drag) { el.style.cursor = inside(...local(e)) ? "move" : ""; return; }
     let dx = (e.clientX - drag.x) / drag.W, dy = (e.clientY - drag.y) / drag.H;
     const from = drag.from;
+    let next;
     if (drag.kind === "corner") {
-      pts = copy(from);
-      pts[drag.i] = [clamp(from[drag.i][0] + dx, 0, 1), clamp(from[drag.i][1] + dy, 0, 1)];
+      next = copy(from);
+      next[drag.i] = [clamp(from[drag.i][0] + dx, 0, 1), clamp(from[drag.i][1] + dy, 0, 1)];
     } else {
       // Edges move straight in or out (top/bottom vertically, sides horizontally); "move" shifts everything
       const idx = drag.kind === "edge" ? [drag.i, (drag.i + 1) % 4] : [0, 1, 2, 3];
@@ -484,11 +486,33 @@ function createCropper(host, src, initial, onChange) {
       const xs = idx.map(i => from[i][0]), ys = idx.map(i => from[i][1]);
       dx = clamp(dx, -Math.min(...xs), 1 - Math.max(...xs));
       dy = clamp(dy, -Math.min(...ys), 1 - Math.max(...ys));
-      pts = copy(from);
-      idx.forEach(i => { pts[i] = [from[i][0] + dx, from[i][1] + dy]; });
+      next = copy(from);
+      idx.forEach(i => { next[i] = [from[i][0] + dx, from[i][1] + dy]; });
     }
+    // Never let a corner cross the diagonal of its neighbours (folding the shape): if this move
+    // would, stop at the furthest valid point between the last good shape and the requested one
+    if (!convex(next)) {
+      const lerp = t => pts.map((p, i) => [p[0] + (next[i][0] - p[0]) * t, p[1] + (next[i][1] - p[1]) * t]);
+      let lo = 0, hi = 1;
+      for (let n = 0; n < 14; n++) { const mid = (lo + hi) / 2; convex(lerp(mid)) ? (lo = mid) : (hi = mid); }
+      next = lerp(lo);
+    }
+    pts = next;
     render(); onChange();
   });
+  // Convex, with every corner at least MIN_ANGLE and every edge a usable length. Measured in image
+  // pixels (not fractions) so the aspect ratio doesn't distort angles; matches the server's check.
+  function convex(p) {
+    const W = img.naturalWidth || el.clientWidth || 1, H = img.naturalHeight || el.clientHeight || 1;
+    const P = p.map(([x, y]) => [x * W, y * H]), minLen = 0.02 * Math.min(W, H);
+    for (let i = 0; i < 4; i++) {
+      const [a, b, c] = [P[i], P[(i + 1) % 4], P[(i + 2) % 4]];
+      const e1 = [b[0] - a[0], b[1] - a[1]], e2 = [c[0] - b[0], c[1] - b[1]];
+      const l1 = Math.hypot(...e1), l2 = Math.hypot(...e2);
+      if (l1 < minLen || e1[0] * e2[1] - e1[1] * e2[0] < Math.sin(MIN_ANGLE) * l1 * l2) return false;
+    }
+    return true;
+  }
   const end = () => { drag = null; };
   el.addEventListener("pointerup", end);
   el.addEventListener("pointercancel", end);
