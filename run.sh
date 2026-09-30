@@ -14,7 +14,7 @@ if [ ! -x .venv/bin/python ]; then
 fi
 # (Re)install whenever requirements.txt changes
 if [ requirements.txt -nt .venv/.installed ]; then
-  .venv/bin/pip install -q -r requirements.txt
+  .venv/bin/python -m pip install -q -r requirements.txt  # not .venv/bin/pip: its path breaks if the folder moves
   touch .venv/.installed
 fi
 
