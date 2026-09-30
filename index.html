@@ -131,8 +131,8 @@
   /* Narrow screens: tapping a scan opens it full screen */
   .viewer { position: fixed; inset: 0; background: var(--scrim); display: none; flex-direction: column; z-index: 10; }
   .viewer.open { display: flex; }
-  .view-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px 0; }
-  .view-head .name { flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text); font: inherit;
+  .view-head { display: flex; flex-wrap: wrap; align-items: center; column-gap: 12px; padding: 12px 16px 0; }
+  .view-head .name { flex: 1; min-width: 160px; background: transparent; border: 0; color: var(--text); font: inherit;
     font-size: 16px; font-weight: 500; padding: 8px 10px; margin-left: -10px; border-radius: var(--r-sm);
     text-overflow: ellipsis; }
   .view-head .name:hover:not(:disabled) { background: var(--surface-var); }
@@ -575,9 +575,31 @@ function mountEditor(host, scan, ui) {
     btn("peek").hidden = c.isFull();
     ui.tools.querySelector(".hint").hidden = changed || !!scan.crop;
     if (ui.meta && c.img.naturalWidth) {
-      const [cw, ch] = c.startSize(), [w, h] = c.size();
-      ui.meta.innerHTML = changed ? `${cw} × ${ch} → <b>${w} × ${h}</b>` : `${cw} × ${ch} · ${fmtSize(scan.size)}`;
+      const [cw, ch] = c.startSize(), [w, h] = c.size(), now = `${cw} × ${ch} · ${fmtSize(scan.size)}`;
+      if (!changed) {
+        ui.meta.textContent = now;
+      } else {
+        const key = JSON.stringify(c.corners);
+        if (key !== est.key) estimate(key);
+        ui.meta.innerHTML = `${now} → <b>${w} × ${h} · ${est.bytes == null ? "…" : fmtSize(est.bytes)}</b>`;
+      }
     }
+  }
+
+  // Exact size of the cropped file, from the server rendering the crop without saving it.
+  // Asked for once dragging pauses; answers for older corner positions are dropped.
+  const est = { key: null, bytes: null, timer: 0, ctl: null };
+  function estimate(key) {
+    Object.assign(est, { key, bytes: null });
+    clearTimeout(est.timer); est.ctl?.abort();
+    est.timer = setTimeout(async () => {
+      est.ctl = new AbortController();
+      try {
+        const r = await fetch(`/api/scans/${scan.name}/estimate`, { method: "POST", signal: est.ctl.signal,
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ corners: c.corners }) });
+        if (r.ok && est.key === key) { est.bytes = (await r.json()).bytes; sync(); }
+      } catch {}
+    }, 350);
   }
   btn("reset").onclick = () => c.reset();
 

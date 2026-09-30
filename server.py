@@ -1,5 +1,5 @@
 """Tiny web app for scanning from the HP DeskJet over USB. Open it from your phone."""
-import json, math, os, re, socket, struct, threading, time
+import io, json, math, os, re, socket, struct, threading, time
 from datetime import datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import quote
@@ -170,12 +170,15 @@ def perspective_coeffs(corners, out_w, out_h):
     return solve(rows, rhs)
 
 
-def crop_scan(name, corners):
-    """Crop a scan to the quadrilateral `corners` (fractions, TL/TR/BR/BL), straightening it
-    into a rectangle. Keeps the uncropped original so the crop can be changed or undone."""
-    path, orig = os.path.join(SCANS, name), os.path.join(ORIGINALS, name)
-    # Always crop from the original so repeated crops never compound quality loss
-    source = orig if os.path.exists(orig) else path
+def crop_source(name):
+    """The image crops start from: the saved original if the scan was cropped before."""
+    orig = os.path.join(ORIGINALS, name)
+    return orig if os.path.exists(orig) else os.path.join(SCANS, name)
+
+
+def render_crop(source, corners):
+    """Crop `source` to the quadrilateral `corners` (fractions, TL/TR/BR/BL), straightening it
+    into a rectangle. Returns (image, dpi, corners in fractions actually used)."""
     with Image.open(source) as im:
         w, h = im.size
         pts = [(min(max(x, 0), 1) * w, min(max(y, 0), 1) * h) for x, y in corners]
@@ -194,13 +197,30 @@ def crop_scan(name, corners):
         else:
             coeffs = perspective_coeffs(pts, out_w, out_h)
             out = im.transform((out_w, out_h), Image.Transform.PERSPECTIVE, coeffs,
-                                                Image.Resampling.BICUBIC)
-        out.save(path + ".tmp", "JPEG", quality=95, dpi=dpi)
+                               Image.Resampling.BICUBIC)
+        out.load()
+    return out, dpi, [[x / w, y / h] for x, y in pts]
+
+
+def encode_jpeg(image, dpi):
+    buf = io.BytesIO()
+    image.save(buf, "JPEG", quality=95, dpi=dpi)
+    return buf.getvalue()
+
+
+def crop_scan(name, corners):
+    """Crop a scan, keeping the uncropped original so the crop can be changed or undone.
+    Always crops from the original so repeated crops never compound quality loss."""
+    path, orig = os.path.join(SCANS, name), os.path.join(ORIGINALS, name)
+    source = crop_source(name)
+    image, dpi, used = render_crop(source, corners)
+    with open(path + ".tmp", "wb") as f:
+        f.write(encode_jpeg(image, dpi))
     if source == path:
         os.replace(path, orig)
     os.replace(path + ".tmp", path)
     with open(orig + ".json", "w") as f:
-        json.dump({"corners": [[x / w, y / h] for x, y in pts]}, f)
+        json.dump({"corners": used}, f)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -294,7 +314,7 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(img)
             return self.send(200, {"name": name, "size": len(img)})
 
-        m = re.match(r"^/api/scans/([^/]+)/(crop|restore|title)$", self.path)
+        m = re.match(r"^/api/scans/([^/]+)/(crop|restore|title|estimate)$", self.path)
         if m and NAME_RE.match(m.group(1)):
             name, action = m.groups()
             if not os.path.exists(os.path.join(SCANS, name)):
@@ -314,6 +334,11 @@ class Handler(BaseHTTPRequestHandler):
                 corners = [[float(x), float(y)] for x, y in box["corners"]]
                 if len(corners) != 4:
                     raise ValueError("need 4 corners")
+                if action == "estimate":
+                    # Exact size the crop would produce: render and encode it, without saving
+                    image, dpi, _ = render_crop(crop_source(name), corners)
+                    return self.send(200, {"bytes": len(encode_jpeg(image, dpi)),
+                                           "width": image.width, "height": image.height})
                 crop_scan(name, corners)
             except (KeyError, TypeError, ValueError) as e:
                 return self.send(400, {"error": str(e)})
