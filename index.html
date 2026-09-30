@@ -12,6 +12,7 @@
     color-scheme: dark;
     --r-sm: 2px; --r-md: 4px;
     --bg: #000000; --surface: #000000; --surface-var: #141414; --surface-high: #202020;
+    --tile: #2a2a2a;  /* scan tile fill, visible around pages that don't match the tile shape */
     --text: #ececec; --muted: #a3a3a3; --outline: rgba(255, 255, 255, .12);
     --primary: #4285f4; --on-primary: #ffffff; --tonal: #1c2b45; --on-tonal: #d2e3fc;
     --error: #ff5d5d; --ok: #5cd08a; --warn: #ffd54a; --scrim: #000000;
@@ -83,10 +84,17 @@
   .menu button { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--text);
     font-size: 14px; padding: 10px 12px; border-radius: var(--r-sm); cursor: pointer; }
   .menu button:hover, .menu button:focus-visible { background: var(--tonal); color: var(--on-tonal); outline: none; }
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .grid { display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); gap: 4px; }
+  .list-title { display: flex; align-items: center; gap: 12px; }
+  /* Column count switcher */
+  .cols { display: flex; gap: 2px; background: var(--surface-var); border-radius: var(--r-sm); padding: 2px; }
+  .cols button { width: 28px; height: 24px; border: 0; background: transparent; color: var(--text); font-size: 17px;
+    line-height: 1; border-radius: var(--r-sm); cursor: pointer; }
+  .cols button:hover:not(:disabled) { background: var(--tonal); color: var(--on-tonal); }
+  .cols button:disabled { color: var(--muted); opacity: .4; cursor: default; }
   .thumb { position: relative; aspect-ratio: .72; border-radius: var(--r-sm); overflow: hidden;
-    background: var(--surface-var); cursor: pointer; }
-  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    background: var(--tile); cursor: pointer; }
+  .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }  /* show the whole page, never cropped */
   .thumb .check { position: absolute; top: 6px; right: 6px; min-width: 22px; height: 22px; padding: 0 4px; border-radius: var(--r-sm);
     border: 2px solid #fff; background: rgba(0,0,0,.3); display: none; color: var(--on-primary); font-size: 13px;
     align-items: center; justify-content: center; font-weight: 700; }
@@ -160,7 +168,7 @@
     .controls { overflow-y: auto; padding-bottom: 32px; border-right: 1px solid var(--outline); }
     .gallery { overflow-y: auto; padding: 16px 24px 0; display: flex; flex-direction: column; }
     .gallery .list-head { margin-top: 4px; }
-    .gallery .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding-bottom: 32px; }
+    .gallery .grid { gap: 8px; padding-bottom: 32px; }
     .gallery .bar { position: sticky; bottom: 0; margin: auto -24px 0; }
     /* The viewer replaces the scans column, leaving the controls usable */
     .viewer { position: static; grid-column: 2; grid-row: 1; z-index: auto; min-width: 0; min-height: 0; }
@@ -296,7 +304,13 @@
 
   <section class="gallery">
     <div class="list-head">
-      <h2>Scans</h2>
+      <div class="list-title">
+        <h2>Scans</h2>
+        <div class="cols" id="colsSwitch" role="group" aria-label="Columns">
+          <button data-step="1" title="Zoom out (smaller tiles)" aria-label="Zoom out">−</button>
+          <button data-step="-1" title="Zoom in (bigger tiles)" aria-label="Zoom in">+</button>
+        </div>
+      </div>
       <div class="head-actions">
         <div class="menu-wrap">
           <button class="text-btn" id="selectAllBtn" hidden aria-haspopup="menu">Select all</button>
@@ -431,6 +445,29 @@ async function deleteScan(name) {
   loadScans();
 }
 
+
+// Grid columns, remembered separately for phone and wide layouts
+const WIDE = matchMedia("(min-width: 840px)");
+const COLS = { narrow: { min: 2, max: 4, value: 3 }, wide: { min: 3, max: 7, value: 5 } };
+try { const saved = JSON.parse(localStorage.getItem("gridCols") || "{}");
+  for (const k in COLS) if (saved[k] >= COLS[k].min && saved[k] <= COLS[k].max) COLS[k].value = saved[k]; } catch {}
+function renderCols() {
+  const c = COLS[WIDE.matches ? "wide" : "narrow"];
+  $("grid").style.setProperty("--cols", c.value);
+  // Buttons work like zoom: − (zoom out) adds columns, + (zoom in) removes them
+  const [zoomOut, zoomIn] = $("colsSwitch").querySelectorAll("button");
+  zoomOut.disabled = c.value >= c.max; zoomIn.disabled = c.value <= c.min;
+}
+$("colsSwitch").onclick = e => {
+  const step = +e.target.closest("[data-step]")?.dataset.step;
+  const c = COLS[WIDE.matches ? "wide" : "narrow"];
+  if (!step) return;
+  c.value = clamp(c.value + step, c.min, c.max);
+  try { localStorage.setItem("gridCols", JSON.stringify({ narrow: COLS.narrow.value, wide: COLS.wide.value })); } catch {}
+  renderCols();
+};
+WIDE.addEventListener("change", renderCols);
+renderCols();
 
 async function loadScans() {
   scans = await (await fetch("/api/scans")).json();
