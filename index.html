@@ -75,6 +75,14 @@
   h2 { font-size: 16px; font-weight: 500; margin: 0; }
   .text-btn { background: none; border: 0; color: var(--primary); font-size: 14px; font-weight: 500;
     padding: 8px 12px; margin-right: -12px; border-radius: var(--r-md); cursor: pointer; }
+  .head-actions { display: flex; gap: 8px; }
+  .menu-wrap { position: relative; }
+  .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 6; min-width: 160px; padding: 4px;
+    background: var(--surface-high); border-radius: var(--r-md); box-shadow: 0 8px 24px rgba(0, 0, 0, .5); }
+  .menu[hidden] { display: none; }
+  .menu button { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--text);
+    font-size: 14px; padding: 10px 12px; border-radius: var(--r-sm); cursor: pointer; }
+  .menu button:hover, .menu button:focus-visible { background: var(--tonal); color: var(--on-tonal); outline: none; }
   .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
   .thumb { position: relative; aspect-ratio: .72; border-radius: var(--r-sm); overflow: hidden;
     background: var(--surface-var); cursor: pointer; }
@@ -289,7 +297,16 @@
   <section class="gallery">
     <div class="list-head">
       <h2>Scans</h2>
-      <button class="text-btn" id="selectBtn">Select</button>
+      <div class="head-actions">
+        <div class="menu-wrap">
+          <button class="text-btn" id="selectAllBtn" hidden aria-haspopup="menu">Select all</button>
+          <div class="menu" id="selectAllMenu" role="menu" hidden>
+            <button role="menuitem" data-order="oldest">Oldest first</button>
+            <button role="menuitem" data-order="newest">Newest first</button>
+          </div>
+        </div>
+        <button class="text-btn" id="selectBtn">Select</button>
+      </div>
     </div>
     <div class="grid" id="grid"></div>
 
@@ -962,6 +979,24 @@ $("selectBtn").onclick = () => {
   renderSelection();
   updateBar();
 };
+// Select all asks for the page order (oldest or newest first); the rest are added in that order after
+// anything already picked. When everything is picked it becomes Deselect all.
+$("selectAllBtn").onclick = e => {
+  e.stopPropagation();
+  if (scans.length && selected.size === scans.length) {
+    selected.clear(); renderSelection(); updateBar();
+    return;
+  }
+  $("selectAllMenu").hidden = !$("selectAllMenu").hidden;
+};
+$("selectAllMenu").onclick = e => {
+  const order = e.target.closest("[data-order]")?.dataset.order;
+  if (!order) return;
+  (order === "oldest" ? [...scans].reverse() : scans).forEach(s => selected.add(s.name));  // scans are newest-first
+  $("selectAllMenu").hidden = true;
+  renderSelection(); updateBar();
+};
+document.addEventListener("click", e => { if (!e.target.closest(".menu-wrap")) $("selectAllMenu").hidden = true; });
 // `selected` keeps the order scans were picked in (Sets iterate in insertion order);
 // that is the page order of the PDF, shown as a number on each picked scan
 function toggleSel(name) {
@@ -979,6 +1014,9 @@ function renderSelection() {
 }
 function updateBar() {
   const n = selected.size;
+  $("selectAllBtn").hidden = !selecting || !scans.length;
+  if ($("selectAllBtn").hidden) $("selectAllMenu").hidden = true;
+  $("selectAllBtn").textContent = n && n === scans.length ? "Deselect all" : "Select all";
   $("pdfSel").disabled = $("delSel").disabled = !n;
   $("pdfSel").textContent = n ? `Save ${n} as PDF` : "Save as PDF";
 }
@@ -1090,6 +1128,7 @@ $("exSave").onclick = async () => {
 
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && !$("exportModal").hidden) { closeExport(); return; }
+  if (e.key === "Escape" && !$("selectAllMenu").hidden) { $("selectAllMenu").hidden = true; return; }
   if (e.key === "Enter" && !$("exportModal").hidden && document.activeElement === $("exName")) { $("exSave").click(); return; }
   if (e.key === "Escape" && $("viewer").classList.contains("open") && document.activeElement !== $("viewName")) $("closeView").click();
 });
