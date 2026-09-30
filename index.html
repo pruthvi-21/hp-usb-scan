@@ -413,8 +413,8 @@ async function loadScans() {
 
 
 // ---------- Cropper ----------
-const FULL = [[0, 0], [1, 0], [1, 1], [0, 1]];
-const MIN_ANGLE = 8 * Math.PI / 180;  // sharpest corner allowed; keep in sync with server.py  // corners: top-left, top-right, bottom-right, bottom-left
+const FULL = [[0, 0], [1, 0], [1, 1], [0, 1]];  // corners: top-left, top-right, bottom-right, bottom-left
+const MIN_ANGLE = 8 * Math.PI / 180;  // sharpest corner allowed; keep in sync with server.py
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
 // Crop area over an image with four independently draggable corners. Edge handles move
@@ -468,8 +468,8 @@ function createCropper(host, src, initial, onChange) {
     const kind = t.c != null ? "corner" : t.e != null ? "edge" : inside(...local(e)) ? "move" : null;
     if (!kind) return;
     e.preventDefault();
-    el.setPointerCapture(e.pointerId);
     drag = { kind, i: +(t.c ?? t.e ?? 0), x: e.clientX, y: e.clientY, from: copy(pts), W: el.clientWidth, H: el.clientHeight };
+    try { el.setPointerCapture(e.pointerId); } catch {}  // keep the drag if the finger leaves the image
   });
   el.addEventListener("pointermove", e => {
     if (!drag) { el.style.cursor = inside(...local(e)) ? "move" : ""; return; }
