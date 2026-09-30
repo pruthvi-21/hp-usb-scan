@@ -91,6 +91,19 @@
   .selecting .thumb .check { display: flex; }
   .thumb.sel .check { background: var(--primary); border-color: var(--primary); }
   .thumb.sel { outline: 3px solid var(--primary); outline-offset: -3px; }
+  /* Tile for the scan in progress: live image, mask over the unscanned part, loading bar */
+  .thumb.pending { cursor: default; }
+  .thumb.pending img { object-fit: fill; background: #fff; }
+  .thumb.pending .mask { position: absolute; left: 0; right: 0; top: 0; bottom: 0; background: var(--surface-var);
+    transition: top .4s linear; }
+  .thumb.pending .label { position: absolute; inset: 0 0 4px; display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .thumb.pending.has-image .label { align-items: flex-end; padding-bottom: 8px; color: var(--text); }
+  .thumb.pending.has-image .label span { background: var(--surface); padding: 2px 6px; border-radius: var(--r-sm); }
+  .thumb.pending .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: var(--surface-high);
+    overflow: hidden; }
+  .thumb.pending .bar div { height: 100%; width: 0; background: var(--primary); transition: width .4s linear; }
+  .thumb.pending .bar div.indeterminate { width: 30%; animation: slide 1.2s ease-in-out infinite; }
   .empty { color: var(--muted); text-align: center; padding: 30px 0; font-size: 14px; grid-column: 1 / -1; }
 
   .btn { flex: 1; border: 0; background: var(--tonal); color: var(--on-tonal); font-size: 15px; font-weight: 500;
@@ -269,6 +282,7 @@ const PAPER = { a4: [2480, 3508], letter: [2550, 3300], a5: [1748, 2480], a6: [1
 const opts = { color: "true", quality: "300", customDpi: 200, size: "a4" };
 let scans = [], selecting = false, selected = new Set(), current = null, viewing = null, busy = false;
 let pvEditor = null, viewEditor = null;
+let pending = null, watcher = null;  // tile and poller for the scan in progress (ours or another device's)
 
 // Remember settings on this phone
 try { Object.assign(opts, JSON.parse(localStorage.getItem("scanOpts") || "{}")); } catch {}
@@ -304,9 +318,13 @@ async function refreshStatus() {
   if (busy) return;
   try {
     const s = await (await fetch("/api/status")).json();
+    if (busy) return;
     $("dot").className = "dot " + (!s.connected ? "bad" : s.state === "Idle" ? "ok" : "busy");
-    $("statusText").textContent = !s.connected ? "Printer not found" : s.state === "Idle" ? "Ready" : "Busy";
-    $("scanBtn").disabled = !s.connected;
+    $("statusText").textContent = !s.connected ? "Printer not found" : s.state === "Idle" ? "Ready"
+      : s.state === "Scanning" ? "Scanning" : "Busy";
+    $("scanBtn").disabled = !s.connected || s.state === "Scanning";
+    // Someone else (another phone, the Mac) is scanning: show it in the list too
+    if (s.state === "Scanning" && !watcher) watcher = watchProgress(false);
   } catch {
     $("dot").className = "dot bad"; $("statusText").textContent = "Mac offline";
   }
@@ -316,7 +334,8 @@ async function loadScans() {
   scans = await (await fetch("/api/scans")).json();
   if (!scans.some(s => s.name === current)) current = scans[0]?.name || null;
   const grid = $("grid");
-  grid.innerHTML = scans.length ? "" : '<div class="empty">No scans yet</div>';
+  grid.innerHTML = scans.length || pending ? "" : '<div class="empty">No scans yet</div>';
+  if (pending) grid.appendChild(pending);
   for (const s of scans) {
     const el = document.createElement("div");
     el.className = "thumb" + (selected.has(s.name) ? " sel" : "");
@@ -532,7 +551,8 @@ $("scanBtn").onclick = async () => {
   $("pvDelete").disabled = $("pvSave").disabled = true;
   $("stage").replaceChildren(paper("Warming up…", true));
   document.querySelectorAll(".thumb").forEach(t => t.classList.remove("active"));
-  const watcher = watchProgress();
+  watcher?.stop();
+  watcher = watchProgress(true);
   try {
     const r = await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dpi, color: opts.color === "true", size: opts.size }) });
@@ -544,7 +564,7 @@ $("scanBtn").onclick = async () => {
   } catch (e) {
     setMsg(e.message, true);
   } finally {
-    watcher.stop();
+    watcher.stop(); watcher = null;
     busy = false;
     $("stopBtn").disabled = false; $("stopBtn").textContent = "Stop";
     app.classList.remove("scanning"); $("scanLabel").textContent = "Scan"; $("scanBtn").disabled = false;
@@ -553,12 +573,35 @@ $("scanBtn").onclick = async () => {
   }
 };
 
-// Poll the scan's progress; on wide screens also draw the partial image as it arrives
-function watchProgress() {
-  let stopped = false, liveBusy = false, lastLive = 0;
-  $("progFill").className = "progress-fill indeterminate";
-  $("progFill").style.width = "";
-  $("progPhase").textContent = "Starting…"; $("progPct").textContent = "";
+// Poll a scan's progress. Shows it as a tile at the front of the Scans list; for our own
+// scan (`own`) also drives the Scan button, the progress bar and the live preview pane.
+function watchProgress(own) {
+  let stopped = false, liveBusy = false, lastLive = 0, liveUrl = null, seen = false;
+  if (own) {
+    $("progFill").className = "progress-fill indeterminate";
+    $("progFill").style.width = "";
+    $("progPhase").textContent = "Starting…"; $("progPct").textContent = "";
+  }
+  showPending(null, "Starting…");
+
+  async function refreshLive(percent) {
+    const r = await fetch("/api/live.jpg");
+    if (!r.ok) return;
+    const url = URL.createObjectURL(await r.blob());
+    const img = new Image();
+    img.src = url;
+    try { await img.decode(); } catch { URL.revokeObjectURL(url); return; }
+    if (stopped) { URL.revokeObjectURL(url); return; }
+    if (pending) {
+      const ti = pending.querySelector("img");
+      ti.src = url; ti.hidden = false;
+      pending.classList.add("has-image");
+      pending.querySelector(".mask").style.top = percent + "%";
+    }
+    if (own && wide.matches) showLive(percent, url);
+    const old = liveUrl; liveUrl = url;
+    if (old) setTimeout(() => URL.revokeObjectURL(old), 2000);
+  }
 
   async function tick() {
     if (stopped) return;
@@ -566,29 +609,64 @@ function watchProgress() {
       const p = await (await fetch("/api/progress")).json();
       if (stopped) return;
       if (p.phase === "scanning" && p.percent > 0) {
+        seen = true;
         const pct = Math.floor(p.percent);
-        $("progFill").className = "progress-fill";
-        $("progFill").style.width = p.percent + "%";
-        $("progPhase").textContent = "Scanning"; $("progPct").textContent = pct + "%";
-        $("scanLabel").textContent = `Scanning ${pct}%`;
-        $("pvTitle").textContent = `Scanning ${pct}%`;
-        if (wide.matches && !liveBusy && Date.now() - lastLive > 1200) { liveBusy = true; lastLive = Date.now(); showLive(p.percent).finally(() => liveBusy = false); }
-      } else if (p.phase === "warming up" || p.phase === "scanning") {
-        $("progPhase").textContent = "Warming up…";
+        showPending(p.percent, pct + "%");
+        if (own) {
+          $("progFill").className = "progress-fill";
+          $("progFill").style.width = p.percent + "%";
+          $("progPhase").textContent = "Scanning"; $("progPct").textContent = pct + "%";
+          $("scanLabel").textContent = `Scanning ${pct}%`;
+          $("pvTitle").textContent = `Scanning ${pct}%`;
+        }
+        if (!liveBusy && Date.now() - lastLive > 1200) {
+          liveBusy = true; lastLive = Date.now();
+          refreshLive(p.percent).catch(() => {}).finally(() => liveBusy = false);
+        }
+      } else if (p.phase === "warming up" || p.phase === "scanning" || p.phase === "starting") {
+        seen = true;
+        showPending(null, "Warming up…");
+        if (own) $("progPhase").textContent = "Warming up…";
+      } else if (!own && (p.phase === "idle" || p.phase === "done") && (seen || Date.now() - startedAt > 3000)) {
+        // Another device's scan finished (or was stopped): drop the tile and show the result
+        stop(); watcher = null;
+        await loadScans(); refreshStatus();
+        return;
       }
     } catch {}
     setTimeout(tick, 600);
   }
+  const startedAt = Date.now();
+  function stop() {
+    stopped = true;
+    pending?.remove(); pending = null;
+    if (liveUrl) setTimeout(() => URL.revokeObjectURL(liveUrl), 2000);
+  }
   tick();
-  return { stop() { stopped = true; } };
+  return { stop };
 }
 
-async function showLive(percent) {
+// The in-progress tile; percent null shows an indeterminate bar
+function showPending(percent, text) {
+  if (!pending) {
+    pending = document.createElement("div");
+    pending.className = "thumb pending";
+    pending.innerHTML = '<img alt="" hidden><div class="mask"></div><div class="label"><span></span></div><div class="bar"><div></div></div>';
+    $("grid").querySelector(".empty")?.remove();
+    $("grid").prepend(pending);
+  }
+  pending.querySelector(".label span").textContent = text;
+  const bar = pending.querySelector(".bar div");
+  bar.className = percent == null ? "indeterminate" : "";
+  bar.style.width = percent == null ? "" : percent + "%";
+}
+
+async function showLive(percent, url) {
   const sheet = $("stage").querySelector(".paper");
   if (!sheet) return;
   const img = new Image();
   img.className = "live"; img.alt = "";
-  img.src = "/api/live.jpg?t=" + Date.now();
+  img.src = url;
   try { await img.decode(); } catch { return; }
   if (!busy || !sheet.isConnected) return;
   sheet.classList.remove("warm");

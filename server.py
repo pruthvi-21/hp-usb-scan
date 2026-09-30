@@ -186,8 +186,10 @@ class Handler(BaseHTTPRequestHandler):
             with open(os.path.join(ROOT, "index.html"), "rb") as f:
                 return self.send(200, f.read(), "text/html; charset=utf-8")
         if self.path == "/api/status":
-            if not usb_lock.acquire(blocking=False):
+            if live:
                 return self.send(200, {"connected": True, "state": "Scanning"})
+            if not usb_lock.acquire(timeout=3):  # another status check or a scan just starting
+                return self.send(200, {"connected": True, "state": "Busy"})
             try:
                 return self.send(200, {"connected": True, "state": hpscan.scanner_state()})
             except Exception as e:
