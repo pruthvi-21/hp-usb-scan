@@ -34,7 +34,7 @@ Crops are four corners (TL, TR, BR, BL fractions). The server always crops from 
 
 ## UI conventions
 
-- The design matches the user's **Libreel** app (`~/Code/products/libreel/mobile/design`): "boxy" Material 3, 2px corners on controls and 4px on surfaces, flat toggle track with a filled primary pill, pure black dark mode. Colors are CSS tokens on `:root` with a dark-mode override.
+- The design matches the user's **Libreel** app (`~/Code/products/libreel/mobile/design`): "boxy" Material 3, 2px corners on controls and 4px on surfaces, flat toggle track with a filled primary pill, pure black dark mode. **Dark mode only** (no light theme), with a vivid orange primary (`#ff7a1a`) chosen so it doesn't blend into white scans or gray surfaces. Stop is a red outline, not a fill, so it doesn't compete with the orange Scan button. Colors are CSS tokens on `:root`.
 - At ≥ 840px width: controls on the left, a preview/crop pane on the right. Below that, tapping a scan opens a full-screen viewer with the same cropper.
 - Keep it dependency-free on the front end, and keep the Python side to `pyusb` + `Pillow`.
 

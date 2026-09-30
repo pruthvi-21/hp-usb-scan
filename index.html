@@ -3,25 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#fef7ff" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
 <title>Scanner</title>
 <style>
-  /* Boxy Material 3 look, matching Libreel's AppShapesBoxy: 2px controls, 4px surfaces */
+  /* Boxy Material 3 look, matching Libreel's AppShapesBoxy: 2px controls, 4px surfaces. Dark only. */
   :root {
+    color-scheme: dark;
     --r-sm: 2px; --r-md: 4px;
-    --bg: #fef7ff; --surface: #fef7ff; --surface-var: #f3edf7; --surface-high: #ece6f0;
-    --text: #1d1b20; --muted: #49454f; --outline: rgba(202, 196, 208, .7);
-    --primary: #6750a4; --on-primary: #ffffff; --tonal: #e8def8; --on-tonal: #1d192b;
-    --error: #b3261e; --ok: #2e7d32; --warn: #a86400; --scrim: #000000;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #000000; --surface: #000000; --surface-var: #141218; --surface-high: #211f26;
-      --text: #e6e0e9; --muted: #cac4d0; --outline: rgba(73, 69, 79, .5);
-      --primary: #d0bcff; --on-primary: #381e72; --tonal: #4a4458; --on-tonal: #e8def8;
-      --error: #f2b8b5; --ok: #81c995; --warn: #f0b95b; --scrim: #000000;
-    }
+    --bg: #000000; --surface: #000000; --surface-var: #141414; --surface-high: #202020;
+    --text: #ececec; --muted: #a3a3a3; --outline: rgba(255, 255, 255, .12);
+    --primary: #ff7a1a; --on-primary: #1f0e00; --tonal: #3a2414; --on-tonal: #ffd9bd;
+    --error: #ff5d5d; --ok: #5cd08a; --warn: #ffd54a; --scrim: #000000;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; background: var(--bg); color: var(--text);
@@ -58,8 +51,8 @@
     font-size: 17px; font-weight: 500; letter-spacing: .1px; padding: 16px; cursor: pointer;
     display: flex; align-items: center; justify-content: center; gap: 10px; }
   .scan-btn:disabled { opacity: .5; }
-  .stop-btn { display: none; flex: 0 0 34%; border: 0; border-radius: var(--r-md); background: var(--error);
-    color: var(--bg); font-size: 17px; font-weight: 500; cursor: pointer; }
+  .stop-btn { display: none; flex: 0 0 34%; border: 0; border-radius: var(--r-md); background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--error); color: var(--error); font-size: 17px; font-weight: 500; cursor: pointer; }
   .stop-btn:disabled { opacity: .5; }
   .scanning .stop-btn { display: block; }
   .spinner { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent;
@@ -92,7 +85,8 @@
   .thumb.sel .check { background: var(--primary); border-color: var(--primary); }
   .thumb.sel { outline: 3px solid var(--primary); outline-offset: -3px; }
   /* Tile for the scan in progress: live image, mask over the unscanned part, loading bar */
-  .thumb.pending { cursor: default; }
+  .thumb.pending { cursor: pointer; }
+  .selecting .thumb.pending { opacity: .5; cursor: default; }
   .thumb.pending img { object-fit: fill; background: #fff; }
   .thumb.pending .mask { position: absolute; left: 0; right: 0; top: 0; bottom: 0; background: var(--surface-var);
     transition: top .4s linear; }
@@ -282,7 +276,9 @@ const PAPER = { a4: [2480, 3508], letter: [2550, 3300], a5: [1748, 2480], a6: [1
 const opts = { color: "true", quality: "300", customDpi: 200, size: "a4" };
 let scans = [], selecting = false, selected = new Set(), current = null, viewing = null, busy = false;
 let pvEditor = null, viewEditor = null;
-let pending = null, watcher = null;  // tile and poller for the scan in progress (ours or another device's)
+let pending = null, watcher = null;
+const LIVE = "__live__";
+let liveFrame = null;  // latest partial image of the scan in progress: { url, percent }  // `current` / `viewing` value while showing the scan in progress  // tile and poller for the scan in progress (ours or another device's)
 
 // Remember settings on this phone
 try { Object.assign(opts, JSON.parse(localStorage.getItem("scanOpts") || "{}")); } catch {}
@@ -345,7 +341,7 @@ async function loadScans() {
     grid.appendChild(el);
   }
   updateBar();
-  if (!busy) showPreview(current);
+  if (current !== LIVE) showPreview(current);
   if ($("viewer").classList.contains("open")) {
     scans.some(s => s.name === viewing) ? openViewer(viewing) : $("viewer").classList.remove("open");
   }
@@ -546,20 +542,19 @@ $("scanBtn").onclick = async () => {
   const dpi = scanDpi();
   setMsg(dpi > 600 ? "Very high quality — this can take several minutes…"
        : dpi > 300 ? "High quality takes a minute or two…" : "This takes about 20–40 seconds…");
-  $("pvTitle").textContent = "Scanning…"; $("pvMeta").textContent = `${dpi} dpi`;
-  pvEditor?.destroy(); pvEditor = null; $("pvTools").hidden = true;
-  $("pvDelete").disabled = $("pvSave").disabled = true;
-  $("stage").replaceChildren(paper("Warming up…", true));
-  document.querySelectorAll(".thumb").forEach(t => t.classList.remove("active"));
   watcher?.stop();
   watcher = watchProgress(true);
+  showLivePane();
+  $("pvMeta").textContent = `${dpi} dpi`;
   try {
     const r = await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dpi, color: opts.color === "true", size: opts.size }) });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || "Scan failed");
     if (j.cancelled) { setMsg("Scan stopped."); return; }
-    current = j.name;
+    // Show the result only if the user was watching the scan, not browsing older ones
+    if (current === LIVE) current = j.name;
+    if (viewing === LIVE) viewing = j.name;
     setMsg("Done! Put the next page on the glass, or tap a scan to save it.");
   } catch (e) {
     setMsg(e.message, true);
@@ -598,7 +593,9 @@ function watchProgress(own) {
       pending.classList.add("has-image");
       pending.querySelector(".mask").style.top = percent + "%";
     }
-    if (own && wide.matches) showLive(percent, url);
+    liveFrame = { url, percent };
+    if (current === LIVE && wide.matches) showLive($("stage"), percent, url);
+    if (viewing === LIVE) showLive($("viewStage"), percent, url);
     const old = liveUrl; liveUrl = url;
     if (old) setTimeout(() => URL.revokeObjectURL(old), 2000);
   }
@@ -617,8 +614,8 @@ function watchProgress(own) {
           $("progFill").style.width = p.percent + "%";
           $("progPhase").textContent = "Scanning"; $("progPct").textContent = pct + "%";
           $("scanLabel").textContent = `Scanning ${pct}%`;
-          $("pvTitle").textContent = `Scanning ${pct}%`;
         }
+        if (current === LIVE) $("pvTitle").textContent = `Scanning ${pct}%`;
         if (!liveBusy && Date.now() - lastLive > 1200) {
           liveBusy = true; lastLive = Date.now();
           refreshLive(p.percent).catch(() => {}).finally(() => liveBusy = false);
@@ -629,9 +626,13 @@ function watchProgress(own) {
         if (own) $("progPhase").textContent = "Warming up…";
       } else if (!own && (p.phase === "idle" || p.phase === "done") && (seen || Date.now() - startedAt > 3000)) {
         // Another device's scan finished (or was stopped): drop the tile and show the result
+        const watching = current === LIVE, viewingLive = viewing === LIVE;
         stop(); watcher = null;
-        await loadScans(); refreshStatus();
-        return;
+        if (watching) current = null;  // loadScans then picks the newest, which is this scan
+        await loadScans();
+        if (viewingLive && scans[0]) openViewer(scans[0].name);
+        refreshStatus();
+
       }
     } catch {}
     setTimeout(tick, 600);
@@ -639,7 +640,10 @@ function watchProgress(own) {
   const startedAt = Date.now();
   function stop() {
     stopped = true;
-    pending?.remove(); pending = null;
+    pending?.remove(); pending = null; liveFrame = null;
+    // Leaving a live view with nothing to show: fall back to the newest scan
+    if (current === LIVE) current = null;
+    if (viewing === LIVE) { viewing = null; $("viewer").classList.remove("open"); }
     if (liveUrl) setTimeout(() => URL.revokeObjectURL(liveUrl), 2000);
   }
   tick();
@@ -650,7 +654,8 @@ function watchProgress(own) {
 function showPending(percent, text) {
   if (!pending) {
     pending = document.createElement("div");
-    pending.className = "thumb pending";
+    pending.className = "thumb pending" + (current === LIVE ? " active" : "");
+    pending.onclick = () => { if (!selecting) wide.matches ? showLivePane() : openLiveViewer(); };
     pending.innerHTML = '<img alt="" hidden><div class="mask"></div><div class="label"><span></span></div><div class="bar"><div></div></div>';
     $("grid").querySelector(".empty")?.remove();
     $("grid").prepend(pending);
@@ -661,14 +666,39 @@ function showPending(percent, text) {
   bar.style.width = percent == null ? "" : percent + "%";
 }
 
-async function showLive(percent, url) {
-  const sheet = $("stage").querySelector(".paper");
+// Live view of the scan in progress in the preview pane
+function showLivePane() {
+  current = LIVE;
+  document.querySelectorAll(".thumb").forEach(t => t.classList.toggle("active", t === pending));
+  pvEditor?.destroy(); pvEditor = null;
+  $("pvTools").hidden = true;
+  $("pvDelete").disabled = $("pvSave").disabled = true;
+  $("pvTitle").textContent = "Scanning…"; $("pvMeta").textContent = "";
+  $("stage").replaceChildren(paper("Warming up…", true));
+  if (liveFrame) showLive($("stage"), liveFrame.percent, liveFrame.url);
+}
+
+// Live view of the scan in progress in the full-screen viewer (narrow screens)
+function openLiveViewer() {
+  viewing = LIVE;
+  viewEditor?.destroy(); viewEditor = null;
+  $("viewTools").hidden = true;
+  $("delView").disabled = $("saveView").disabled = true;
+  $("viewStage").replaceChildren(paper("Warming up…", true));
+  $("viewer").classList.add("open");
+  if (liveFrame) showLive($("viewStage"), liveFrame.percent, liveFrame.url);
+}
+
+// Draw the latest partial image into the scanning placeholder inside `host`
+async function showLive(host, percent, url) {
+  const sheet = host.querySelector(".paper");
   if (!sheet) return;
   const img = new Image();
   img.className = "live"; img.alt = "";
   img.src = url;
   try { await img.decode(); } catch { return; }
-  if (!busy || !sheet.isConnected) return;
+  if (!sheet.isConnected) return;
+  sheet.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;  // the real page shape
   sheet.classList.remove("warm");
   sheet.querySelectorAll("span").forEach(el => el.remove());
   let mask = sheet.querySelector(".live-mask"), line = sheet.querySelector(".scanline");
@@ -733,11 +763,13 @@ function openViewer(name) {
   const scan = scans.find(s => s.name === name);
   if (!scan) return;
   viewing = name;
+  $("viewTools").hidden = false;
+  $("delView").disabled = $("saveView").disabled = false;
   $("viewer").classList.add("open");
   viewEditor?.destroy();
   viewEditor = mountEditor($("viewStage"), scan, { save: $("saveView"), tools: $("viewTools") });
 }
-$("closeView").onclick = () => { $("viewer").classList.remove("open"); viewEditor?.destroy(); viewEditor = null; };
+$("closeView").onclick = () => { $("viewer").classList.remove("open"); viewEditor?.destroy(); viewEditor = null; viewing = null; };
 $("delView").onclick = async () => {
   if (!confirm("Delete this scan?")) return;
   await fetch(`/api/scans/${viewing}`, { method: "DELETE" });
@@ -746,8 +778,10 @@ $("delView").onclick = async () => {
 // Rotating a tablet across the breakpoint: hand the open scan over between viewer and pane
 wide.addEventListener("change", () => {
   if (wide.matches && $("viewer").classList.contains("open")) {
-    $("viewer").classList.remove("open"); showPreview(viewing);
-  } else if (!busy) showPreview(current);
+    $("viewer").classList.remove("open");
+    viewing === LIVE ? showLivePane() : showPreview(viewing);
+    viewing = null;
+  } else if (wide.matches) current === LIVE ? showLivePane() : showPreview(current);
 });
 
 refreshStatus(); loadScans();
