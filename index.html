@@ -177,6 +177,30 @@
     box-shadow: 0 0 0 2px var(--primary), 0 6px 20px rgba(0, 0, 0, .55); }
   .loupe.show { opacity: 1; }
   .loupe canvas { display: block; width: 100%; height: 100%; }
+  /* Export dialog */
+  .modal { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center;
+    padding: 16px; background: rgba(0, 0, 0, .7); }
+  .modal[hidden] { display: none !important; }
+  .modal .sheet { width: 100%; max-width: 420px; background: var(--surface-high); border-radius: var(--r-md);
+    padding: 20px; box-shadow: 0 12px 40px rgba(0, 0, 0, .6); }
+  .modal h3 { margin: 0 0 16px; font-size: 18px; font-weight: 500; }
+  .modal label { display: block; font-size: 12px; font-weight: 500; letter-spacing: .5px; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 8px; }
+  .modal .field { width: 100%; background: var(--surface-var); border: 0; border-radius: var(--r-sm); color: var(--text);
+    font: inherit; padding: 10px 12px; margin-bottom: 18px; }
+  .modal .field:focus { outline: 2px solid var(--primary); outline-offset: -2px; }
+  .modal .name-row { display: flex; align-items: center; gap: 8px; }
+  .modal .name-row .field { flex: 1; min-width: 0; }
+  .modal .name-row .ext { color: var(--muted); margin-bottom: 18px; }
+  .modal input[type=range] { width: 100%; accent-color: var(--primary); margin: 0; }
+  .modal .scale { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .modal .result { display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+    background: var(--surface-var); border-radius: var(--r-sm); padding: 12px; margin: 16px 0 20px;
+    font-variant-numeric: tabular-nums; }
+  .modal .result .q { color: var(--muted); font-size: 14px; }
+  .modal .result .size { font-size: 20px; font-weight: 500; }
+  .modal .result .size small { font-size: 13px; color: var(--muted); font-weight: 400; margin-left: 6px; }
+  .modal .actions { display: flex; gap: 8px; }
   .crop-tools { display: flex; justify-content: center; gap: 4px; min-height: 36px; }
   .crop-tools .text-btn { margin: 0; }
   /* Eye button: hover (mouse) or press and hold (touch) to see the cropped result */
@@ -297,6 +321,22 @@
 </div>
 
 
+<div class="modal" id="exportModal" hidden role="dialog" aria-modal="true" aria-labelledby="exTitle">
+  <div class="sheet">
+    <h3 id="exTitle">Export</h3>
+    <label for="exName">File name</label>
+    <div class="name-row"><input class="field" id="exName" spellcheck="false" autocomplete="off"><span class="ext" id="exExt">.pdf</span></div>
+    <label for="exQuality">Compression</label>
+    <input type="range" id="exQuality" min="10" max="100" step="5" aria-label="Compression">
+    <div class="scale"><span>Smaller file</span><span>Original</span></div>
+    <div class="result"><span class="q" id="exQLabel"></span><span class="size" id="exSize">…</span></div>
+    <div class="actions">
+      <button class="btn" id="exCancel">Cancel</button>
+      <button class="btn primary" id="exSave">Save…</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 const app = $("app");
@@ -374,20 +414,6 @@ async function deleteScan(name) {
   loadScans();
 }
 
-// Download scans (oldest first) as one PDF
-async function exportPdf(names) {
-  try {
-    const r = await fetch("/api/pdf", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ names }) });
-    if (!r.ok) throw new Error("Could not make PDF");
-    const blob = await r.blob();
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = (r.headers.get("Content-Disposition") || "").match(/filename="(.+)"/)?.[1] || "scans.pdf";
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-  } catch (e) { alert(e.message); }
-}
 
 async function loadScans() {
   scans = await (await fetch("/api/scans")).json();
@@ -405,8 +431,8 @@ async function loadScans() {
       const act = e.target.closest("[data-act]")?.dataset.act;
       if (selecting) return toggleSel(s.name, el);
       if (!act || act === "edit") return openViewer(s.name);
-      if (act === "pdf") return exportPdf([s.name]);
-      if (act === "jpeg") return download(s.name);
+      if (act === "pdf") return openExport([s.name], "pdf");
+      if (act === "jpeg") return openExport([s.name], "jpeg");
       if (act === "delete") return deleteScan(s.name);
     };
     grid.appendChild(el);
@@ -746,12 +772,6 @@ function mountEditor(host, scan, ui) {
   return c;
 }
 
-function download(name) {
-  const a = document.createElement("a");
-  a.href = `/scans/${name}?download&v=${Date.now()}`;
-  a.download = (scans.find(s => s.name === name)?.title || name.slice(0, -4)) + ".jpg";
-  a.click();
-}
 
 // Paper-shaped placeholder, sized to fit the stage with the chosen paper's aspect ratio
 function paper(text, scanning) {
@@ -953,9 +973,7 @@ function updateBar() {
 $("pdfSel").onclick = async () => {
   // Oldest first, so pages come out in the order they were scanned
   const names = scans.map(s => s.name).filter(n => selected.has(n)).reverse();
-  $("pdfSel").disabled = true;
-  await exportPdf(names);
-  updateBar();
+  openExport(names, "pdf");
 };
 $("delSel").onclick = async () => {
   if (!confirm(`Delete ${selected.size} scan(s)?`)) return;
@@ -976,7 +994,93 @@ function openViewer(name) {
   viewEditor?.destroy();
   viewEditor = mountEditor($("viewStage"), scan, { meta: $("viewMeta"), save: $("saveView"), tools: $("viewTools") });
 }
+// ---------- Export dialog: file name, compression with the exact resulting size, then a save location ----------
+const exp = { names: [], format: "pdf", original: null, timer: 0, ctl: null, seq: 0 };
+const exQuality = () => { const v = +$("exQuality").value; return v >= 100 ? null : Math.min(v, 95); };
+
+function openExport(names, format) {
+  Object.assign(exp, { names, format, original: null });
+  const first = scans.find(s => s.name === names[0]);
+  $("exTitle").textContent = format === "jpeg" ? "Export as JPEG"
+    : names.length > 1 ? `Export ${names.length} pages as PDF` : "Export as PDF";
+  $("exName").value = names.length === 1 ? (first?.title || names[0].slice(0, -4))
+    : "Scans " + new Date().toISOString().slice(0, 10);
+  $("exExt").textContent = format === "jpeg" ? ".jpg" : ".pdf";
+  let q = 100;
+  try { q = +(localStorage.getItem("exportQuality") || 100); } catch {}
+  $("exQuality").value = q;
+  $("exSave").disabled = false; $("exSave").textContent = "Save…";
+  $("exportModal").hidden = false;
+  exportSize(true);
+  requestAnimationFrame(() => $("exSave").focus());
+}
+function closeExport() { $("exportModal").hidden = true; exp.ctl?.abort(); clearTimeout(exp.timer); }
+
+async function fetchExport(quality, sizeOnly, signal) {
+  const r = await fetch("/api/export", { method: "POST", signal, headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ names: exp.names, format: exp.format, quality, sizeOnly }) });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Export failed");
+  return sizeOnly ? (await r.json()).bytes : r.blob();
+}
+
+// Exact size for the slider's setting: the Mac recompresses and reports the byte count
+function exportSize(now) {
+  const q = exQuality(), seq = ++exp.seq;
+  $("exQLabel").textContent = q == null ? "Original (no compression)" : `Quality ${q}`;
+  $("exSize").textContent = "…";
+  clearTimeout(exp.timer); exp.ctl?.abort();
+  exp.timer = setTimeout(async () => {
+    exp.ctl = new AbortController();
+    try {
+      if (exp.original == null) exp.original = await fetchExport(null, true, exp.ctl.signal);
+      const bytes = q == null ? exp.original : await fetchExport(q, true, exp.ctl.signal);
+      if (seq !== exp.seq) return;
+      const saved = q != null && exp.original ? Math.round((1 - bytes / exp.original) * 100) : 0;
+      $("exSize").innerHTML = fmtSize(bytes) + (saved > 0 ? `<small>−${saved}%</small>` : "");
+    } catch (e) { if (e.name !== "AbortError" && seq === exp.seq) $("exSize").textContent = "—"; }
+  }, now ? 0 : 250);
+}
+$("exQuality").addEventListener("input", () => {
+  try { localStorage.setItem("exportQuality", $("exQuality").value); } catch {}
+  exportSize(false);
+});
+$("exCancel").onclick = closeExport;
+$("exportModal").addEventListener("click", e => { if (e.target === $("exportModal")) closeExport(); });
+
+$("exSave").onclick = async () => {
+  const ext = exp.format === "jpeg" ? ".jpg" : ".pdf";
+  const filename = (clean => (clean || "scan") + ext)($("exName").value.trim().replace(/[\\/:*?"<>|]+/g, " ").replace(/\.(jpe?g|pdf)$/i, ""));
+  const type = exp.format === "jpeg" ? { description: "JPEG image", accept: { "image/jpeg": [".jpg", ".jpeg"] } }
+    : { description: "PDF document", accept: { "application/pdf": [".pdf"] } };
+  // Ask where to save first, while the click still counts as a user action; browsers without a
+  // save dialog (Safari, Firefox, phones, or pages opened over plain http by IP) fall back to a download
+  let handle = null;
+  if (window.showSaveFilePicker) {
+    try { handle = await showSaveFilePicker({ suggestedName: filename, types: [type] }); }
+    catch (e) { if (e.name === "AbortError") return; }  // they cancelled the save dialog
+  }
+  $("exSave").disabled = true; $("exSave").textContent = "Saving…";
+  try {
+    const blob = await fetchExport(exQuality(), false);
+    if (handle) {
+      const w = await handle.createWritable();
+      await w.write(blob); await w.close();
+    } else {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    }
+    closeExport();
+    if (selecting) $("selectBtn").click();
+  } catch (e) {
+    alert(e.message);
+    $("exSave").disabled = false; $("exSave").textContent = "Save…";
+  }
+};
+
 document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && !$("exportModal").hidden) { closeExport(); return; }
+  if (e.key === "Enter" && !$("exportModal").hidden && document.activeElement === $("exName")) { $("exSave").click(); return; }
   if (e.key === "Escape" && $("viewer").classList.contains("open") && document.activeElement !== $("viewName")) $("closeView").click();
 });
 

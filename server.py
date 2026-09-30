@@ -73,6 +73,24 @@ def jpeg_dpi(data):
     return 300
 
 
+def build_export(names, fmt, quality):
+    """The bytes of a JPEG (one scan) or PDF (scans in the given order). quality is a JPEG
+    quality (1-95) to recompress with, or None to keep the scans' own JPEG data untouched."""
+    pages = []
+    for n in names:
+        with open(os.path.join(SCANS, n), "rb") as f:
+            data = f.read()
+        if quality is not None:
+            with Image.open(io.BytesIO(data)) as im:
+                buf = io.BytesIO()
+                im.save(buf, "JPEG", quality=quality, optimize=True, dpi=(jpeg_dpi(data),) * 2)
+                data = buf.getvalue()
+        pages.append(data)
+    if fmt == "jpeg":
+        return pages[0]
+    return jpegs_to_pdf(pages, [jpeg_dpi(d) for d in pages])
+
+
 def list_scans():
     names = sorted((n for n in os.listdir(SCANS) if NAME_RE.match(n)), reverse=True)
     titles = load_titles()
@@ -359,18 +377,25 @@ class Handler(BaseHTTPRequestHandler):
             cancel_scan.set()
             return self.send(200, {"ok": True})
 
-        if self.path == "/api/pdf":
-            names = [n for n in self.read_json().get("names", []) if NAME_RE.match(n)]
-            images = []
-            for n in names:
-                with open(os.path.join(SCANS, n), "rb") as f:
-                    images.append(f.read())
-            if not images:
-                return self.send(400, {"error": "no scans selected"})
-            pdf = jpegs_to_pdf(images, [jpeg_dpi(d) for d in images])
-            fname = (title_of(names[0]) + ".pdf" if len(names) == 1
+        if self.path == "/api/export":
+            # {names, format: "jpeg"|"pdf", quality: 1-95 or null for original, sizeOnly}
+            req = self.read_json()
+            names = [n for n in req.get("names", []) if NAME_RE.match(n)
+                     and os.path.exists(os.path.join(SCANS, n))]
+            fmt = req.get("format")
+            quality = req.get("quality")
+            if not names or fmt not in ("jpeg", "pdf") or (fmt == "jpeg" and len(names) != 1):
+                return self.send(400, {"error": "nothing to export"})
+            if quality is not None and not (isinstance(quality, int) and 1 <= quality <= 95):
+                return self.send(400, {"error": "bad quality"})
+            data = build_export(names, fmt, quality)
+            if req.get("sizeOnly"):
+                return self.send(200, {"bytes": len(data)})
+            ext = ".jpg" if fmt == "jpeg" else ".pdf"
+            fname = (title_of(names[0]) + ext if len(names) == 1
                      else datetime.now().strftime("scans-%Y%m%d-%H%M%S.pdf"))
-            return self.send(200, pdf, "application/pdf", {"Content-Disposition": attachment(fname)})
+            ctype = "image/jpeg" if fmt == "jpeg" else "application/pdf"
+            return self.send(200, data, ctype, {"Content-Disposition": attachment(fname)})
         self.send(404, {"error": "not found"})
 
     def do_DELETE(self):
