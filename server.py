@@ -2,6 +2,7 @@
 import json, math, os, re, socket, struct, threading, time
 from datetime import datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import quote
 
 from PIL import Image
 
@@ -10,9 +11,11 @@ import hpscan
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SCANS = os.path.join(ROOT, "scans")
 ORIGINALS = os.path.join(SCANS, ".originals")  # uncropped copies, for "Restore original"
+TITLES = os.path.join(SCANS, ".titles.json")  # user-given names; files keep their scan-<time> names
 PORT = int(os.environ.get("PORT", 8080))
 NAME_RE = re.compile(r"^scan-[\w-]+\.jpg$")
 
+titles_lock = threading.Lock()
 usb_lock = threading.Lock()  # only one USB conversation at a time
 cancel_scan = threading.Event()
 live = None  # hpscan.ScanProgress of the scan in flight
@@ -72,12 +75,52 @@ def jpeg_dpi(data):
 
 def list_scans():
     names = sorted((n for n in os.listdir(SCANS) if NAME_RE.match(n)), reverse=True)
+    titles = load_titles()
     out = []
     for n in names:
         st = os.stat(os.path.join(SCANS, n))
-        out.append({"name": n, "size": st.st_size, "version": int(st.st_mtime * 1000),
-                    "crop": read_crop(n)})
+        out.append({"name": n, "title": title_of(n, titles), "size": st.st_size,
+                    "version": int(st.st_mtime * 1000), "crop": read_crop(n)})
     return out
+
+
+def load_titles():
+    try:
+        with open(TITLES) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def title_of(name, titles=None):
+    """The name shown and used for downloads: the user's title, else the file name without .jpg."""
+    return (titles if titles is not None else load_titles()).get(name) or name[:-4]
+
+
+def set_title(name, title):
+    """Set (or with an empty title, clear) a scan's display name."""
+    with titles_lock:
+        titles = load_titles()
+        if title:
+            titles[name] = title
+        else:
+            titles.pop(name, None)
+        with open(TITLES + ".tmp", "w") as f:
+            json.dump(titles, f, indent=1)
+        os.replace(TITLES + ".tmp", TITLES)
+
+
+def clean_title(title):
+    """Make a user-typed name safe to use as a download file name."""
+    title = re.sub(r"[\x00-\x1f/\\:*?\"<>|]+", " ", str(title))
+    title = re.sub(r"\.(jpe?g|pdf)$", "", title.strip(), flags=re.I)
+    return re.sub(r"\s+", " ", title).strip(" .")[:120]
+
+
+def attachment(filename):
+    """Content-Disposition for a download, keeping non-ASCII names intact."""
+    fallback = filename.encode("ascii", "replace").decode().replace("?", "_").replace('"', "")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename)}"
 
 
 def read_crop(name):
@@ -218,7 +261,7 @@ class Handler(BaseHTTPRequestHandler):
                 path = os.path.join(ORIGINALS, m.group(1))
             if os.path.exists(path):
                 download = "download" in query
-                extra = {"Content-Disposition": f'attachment; filename="{m.group(1)}"'} if download else {}
+                extra = {"Content-Disposition": attachment(title_of(m.group(1)) + ".jpg")} if download else {}
                 with open(path, "rb") as f:
                     return self.send(200, f.read(), "image/jpeg", extra)
         self.send(404, {"error": "not found"})
@@ -251,11 +294,15 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(img)
             return self.send(200, {"name": name, "size": len(img)})
 
-        m = re.match(r"^/api/scans/([^/]+)/(crop|restore)$", self.path)
+        m = re.match(r"^/api/scans/([^/]+)/(crop|restore|title)$", self.path)
         if m and NAME_RE.match(m.group(1)):
             name, action = m.groups()
             if not os.path.exists(os.path.join(SCANS, name)):
                 return self.send(404, {"error": "not found"})
+            if action == "title":
+                title = clean_title(self.read_json().get("title", ""))
+                set_title(name, "" if title == name[:-4] else title)
+                return self.send(200, {"title": title_of(name)})
             if action == "restore":
                 orig = os.path.join(ORIGINALS, name)
                 if os.path.exists(orig):
@@ -285,10 +332,9 @@ class Handler(BaseHTTPRequestHandler):
             if not images:
                 return self.send(400, {"error": "no scans selected"})
             pdf = jpegs_to_pdf(images, [jpeg_dpi(d) for d in images])
-            fname = (names[0][:-4] + ".pdf" if len(names) == 1
+            fname = (title_of(names[0]) + ".pdf" if len(names) == 1
                      else datetime.now().strftime("scans-%Y%m%d-%H%M%S.pdf"))
-            return self.send(200, pdf, "application/pdf",
-                             {"Content-Disposition": f'attachment; filename="{fname}"'})
+            return self.send(200, pdf, "application/pdf", {"Content-Disposition": attachment(fname)})
         self.send(404, {"error": "not found"})
 
     def do_DELETE(self):
@@ -298,6 +344,7 @@ class Handler(BaseHTTPRequestHandler):
             if os.path.exists(path):
                 os.remove(path)
                 remove_original(m.group(1))
+                set_title(m.group(1), "")
                 return self.send(200, {"ok": True})
         self.send(404, {"error": "not found"})
 

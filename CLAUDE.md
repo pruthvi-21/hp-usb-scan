@@ -15,7 +15,7 @@ It prints the LAN URL (IP and `.local`; some Android phones can't resolve `.loca
 - `hpscan.py`: USB transport and scanning. No web code.
 - `server.py`: stdlib `ThreadingHTTPServer`. JSON API, crop (Pillow), and PDF building (hand-written, no library).
 - `index.html`: the whole UI in one file (vanilla JS, no build step).
-- `scans/`: the user's scanned documents (gitignored; personal). `scans/.originals/` holds uncropped originals plus `<name>.json` crop corners.
+- `scans/`: the user's scanned documents (gitignored; personal). `scans/.originals/` holds uncropped originals plus `<name>.json` crop corners. `scans/.titles.json` maps file names to user-given display names; renaming never renames files (they stay `scan-<time>.jpg` so ordering and URLs don't change), but downloads and PDFs use the display name.
 
 ## How the scanner is driven (non-obvious)
 

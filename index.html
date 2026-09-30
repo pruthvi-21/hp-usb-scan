@@ -131,7 +131,17 @@
   /* Narrow screens: tapping a scan opens it full screen */
   .viewer { position: fixed; inset: 0; background: var(--scrim); display: none; flex-direction: column; z-index: 10; }
   .viewer.open { display: flex; }
-  .viewer .img-wrap { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .view-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px 0; }
+  .view-head .name { flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text); font: inherit;
+    font-size: 16px; font-weight: 500; padding: 8px 10px; margin-left: -10px; border-radius: var(--r-sm);
+    text-overflow: ellipsis; }
+  .view-head .name:hover:not(:disabled) { background: var(--surface-var); }
+  .view-head .name:focus { background: var(--surface-var); outline: 2px solid var(--primary); outline-offset: -2px; }
+  .view-head .name:disabled { opacity: 1; }
+  .view-head .meta { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .view-head .meta b { color: var(--primary); font-weight: 500; }
+  .viewer .img-wrap { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 20px;
+    position: relative; }
   .viewer .crop-tools { padding: 0 16px; }
   .viewer .actions { display: flex; gap: 8px; padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); }
 
@@ -163,6 +173,21 @@
   .crop-h.edge.lr { cursor: ew-resize; } .crop-h.edge.lr::after { left: 17px; top: 8px; width: 6px; height: 24px; }
   .crop-tools { display: flex; justify-content: center; gap: 4px; min-height: 36px; }
   .crop-tools .text-btn { margin: 0; }
+  /* Eye button: hover (mouse) or press and hold (touch) to see the cropped result */
+  .crop-tools .peek { display: inline-flex; align-items: center; gap: 6px; touch-action: none; user-select: none;
+    -webkit-user-select: none; -webkit-touch-callout: none; }
+  .crop-tools .peek svg { width: 18px; height: 18px; fill: currentColor; }
+  .crop-tools .peek.on { background: var(--tonal); color: var(--on-tonal); }
+  .crop-peek { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: inherit; background: var(--scrim); opacity: 0; transition: opacity .16s ease-out; pointer-events: none; z-index: 1; }
+  .crop-peek.show { opacity: 1; }
+  .crop-peek .result { position: relative; overflow: hidden; background: #fff; border-radius: var(--r-sm);
+    box-shadow: 0 1px 3px rgba(0,0,0,.2); flex: none; }
+  .crop-peek .result > div { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  .crop-peek img { position: absolute; left: 0; top: 0; transform-origin: 0 0; max-width: none; }
+  .crop-peek .tag { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); font-size: 12px; font-weight: 500;
+    background: var(--surface-high); color: var(--text); padding: 4px 8px; border-radius: var(--r-sm);
+    font-variant-numeric: tabular-nums; white-space: nowrap; }
   .crop-tools .hint { font-size: 13px; color: var(--muted); align-self: center; }
   .paper { background: var(--surface); border: 1px dashed var(--outline); border-radius: var(--r-sm);
     max-width: 100%; max-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -246,9 +271,15 @@
   </section>
 
   <div class="viewer" id="viewer">
+    <div class="view-head">
+      <input class="name" id="viewName" spellcheck="false" autocomplete="off" aria-label="File name" title="Rename">
+      <span class="meta" id="viewMeta"></span>
+    </div>
     <div class="img-wrap" id="viewStage"></div>
     <div class="crop-tools" id="viewTools">
       <span class="hint">Drag the corners to crop</span>
+      <button class="text-btn peek" data-act="peek" hidden title="Hover, or press and hold, to see the cropped result"
+        aria-label="Preview crop"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>Preview</button>
       <button class="text-btn" data-act="reset" hidden>Reset crop</button>
       <button class="text-btn" data-act="restore" hidden>Restore original</button>
     </div>
@@ -362,6 +393,7 @@ async function loadScans() {
     const el = document.createElement("div");
     el.className = "thumb" + (selected.has(s.name) ? " sel" : "");
     el.dataset.name = s.name;
+    el.title = s.title;
     el.innerHTML = `<img loading="lazy" src="/scans/${s.name}?v=${s.version}" alt=""><span class="check">✓</span>` +
       `<div class="hover-actions">${HOVER_ACTIONS}</div>`;
     el.onclick = e => {
@@ -469,18 +501,64 @@ function createCropper(host, src, initial, onChange) {
   return {
     el, img,
     get corners() { return pts; },
-    // Output size in pixels, computed the same way as the server
-    size() {
+    // Output size in pixels, computed the same way as the server (for the current corners by default)
+    size(corners = pts) {
       const W = img.naturalWidth, H = img.naturalHeight;
-      const P = pts.map(([x, y]) => [x * W, y * H]);
+      const P = corners.map(([x, y]) => [x * W, y * H]);
       const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
       return [Math.round(Math.max(d(P[0], P[1]), d(P[3], P[2]))), Math.round(Math.max(d(P[0], P[3]), d(P[1], P[2])))];
     },
+    startSize() { return this.size(start); },
     changed: () => differs(pts, start),
     isFull: () => !differs(pts, FULL),
     reset() { pts = copy(start); render(); onChange(); },
     destroy() { ro.disconnect(); },
   };
+}
+
+// Projective transform taking 4 source points onto 4 destination points, as the 8 coefficients
+// [a b c d e f g h] of x' = (ax + by + c) / (gx + hy + 1), y' = (dx + ey + f) / (gx + hy + 1)
+function homography(src, dst) {
+  const m = [];
+  src.forEach(([x, y], i) => {
+    const [u, v] = dst[i];
+    m.push([x, y, 1, 0, 0, 0, -u * x, -u * y, u]);
+    m.push([0, 0, 0, x, y, 1, -v * x, -v * y, v]);
+  });
+  for (let col = 0; col < 8; col++) {  // Gaussian elimination with partial pivoting
+    let p = col;
+    for (let r = col + 1; r < 8; r++) if (Math.abs(m[r][col]) > Math.abs(m[p][col])) p = r;
+    [m[col], m[p]] = [m[p], m[col]];
+    for (let r = 0; r < 8; r++) {
+      if (r === col || !m[col][col]) continue;
+      const f = m[r][col] / m[col][col];
+      for (let k = col; k < 9; k++) m[r][k] -= f * m[col][k];
+    }
+  }
+  return m.map((row, i) => row[8] / row[i]);
+}
+
+// Overlay showing what the crop will produce: the image warped by the GPU (CSS matrix3d)
+// with the same corner mapping the server uses, fitted into `host`
+function cropPeek(host, c) {
+  const W = c.img.naturalWidth, H = c.img.naturalHeight;
+  const [w, h] = c.size();
+  const src = c.corners.map(([x, y]) => [x * W, y * H]);
+  const [a, b, cc, d, e, f, g, hh] = homography(src, [[0, 0], [w, 0], [w, h], [0, h]]);
+  const cs = getComputedStyle(host);
+  const aw = host.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const ah = host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  const k = Math.min(aw / w, ah / h);
+
+  const el = document.createElement("div");
+  el.className = "crop-peek";
+  el.innerHTML = `<div class="result" style="width:${w * k}px;height:${h * k}px">` +
+    `<div style="transform:scale(${k})"><img alt="" src="${c.img.src}"></div></div>` +
+    `<span class="tag">Result · ${w} × ${h}</span>`;
+  const img = el.querySelector("img");
+  img.style.width = W + "px"; img.style.height = H + "px";
+  img.style.transform = `matrix3d(${a},${d},0,${g},${b},${e},0,${hh},0,0,1,0,${cc},${f},0,1)`;
+  return el;
 }
 
 // A scan with a cropper, wired to its Save button and crop tools
@@ -494,13 +572,44 @@ function mountEditor(host, scan, ui) {
     ui.save.textContent = changed ? "Crop & save" : "Save";
     btn("reset").hidden = !changed;
     btn("restore").hidden = !scan.crop || changed;
+    btn("peek").hidden = c.isFull();
     ui.tools.querySelector(".hint").hidden = changed || !!scan.crop;
     if (ui.meta && c.img.naturalWidth) {
-      const [w, h] = c.size();
-      ui.meta.textContent = `${w} × ${h}` + (changed ? " · cropping" : ` · ${fmtSize(scan.size)}`);
+      const [cw, ch] = c.startSize(), [w, h] = c.size();
+      ui.meta.innerHTML = changed ? `${cw} × ${ch} → <b>${w} × ${h}</b>` : `${cw} × ${ch} · ${fmtSize(scan.size)}`;
     }
   }
   btn("reset").onclick = () => c.reset();
+
+  // Eye button: hover with a mouse, or press and hold on touch, to peek at the result
+  const peek = btn("peek");
+  let peekEl = null;
+  const showPeek = () => {
+    if (peekEl || c.isFull() || !c.img.naturalWidth) return;
+    peekEl = cropPeek(host, c);
+    host.appendChild(peekEl);
+    peek.classList.add("on");
+    peekEl.getBoundingClientRect();  // commit the transparent state so the fade-in runs
+    peekEl.classList.add("show");
+  };
+  const hidePeek = () => {
+    if (!peekEl) return;
+    const el = peekEl; peekEl = null;
+    peek.classList.remove("on");
+    el.classList.remove("show");
+    setTimeout(() => el.remove(), 180);
+  };
+  peek.onpointerenter = e => { if (e.pointerType === "mouse") showPeek(); };
+  peek.onpointerleave = hidePeek;
+  peek.onpointerdown = e => {
+    showPeek();
+    try { peek.setPointerCapture(e.pointerId); } catch {}  // keep getting pointerup if the finger slides off
+  };
+  peek.onpointerup = e => { if (e.pointerType !== "mouse") hidePeek(); };
+  peek.onpointercancel = hidePeek;
+  peek.oncontextmenu = e => e.preventDefault();  // no long-press menu on phones
+  peek.onclick = e => e.preventDefault();
+
   btn("restore").onclick = async () => {
     await fetch(`/api/scans/${scan.name}/restore`, { method: "POST" });
     await loadScans();
@@ -526,7 +635,7 @@ function mountEditor(host, scan, ui) {
 function download(name) {
   const a = document.createElement("a");
   a.href = `/scans/${name}?download&v=${Date.now()}`;
-  a.download = name;
+  a.download = (scans.find(s => s.name === name)?.title || name.slice(0, -4)) + ".jpg";
   a.click();
 }
 
@@ -673,6 +782,7 @@ function showPending(percent, text) {
 function openLiveViewer() {
   viewing = LIVE;
   viewEditor?.destroy(); viewEditor = null;
+  $("viewName").value = "Scanning…"; $("viewName").disabled = true; $("viewMeta").textContent = "";
   $("viewTools").hidden = true;
   $("delView").disabled = $("saveView").disabled = true;
   $("viewStage").replaceChildren(paper("Warming up…", true));
@@ -744,15 +854,36 @@ function openViewer(name) {
   const scan = scans.find(s => s.name === name);
   if (!scan) return;
   viewing = name;
+  $("viewName").disabled = false;
+  $("viewName").value = scan.title;
   $("viewTools").hidden = false;
   $("delView").disabled = $("saveView").disabled = false;
   $("viewer").classList.add("open");
   viewEditor?.destroy();
-  viewEditor = mountEditor($("viewStage"), scan, { save: $("saveView"), tools: $("viewTools") });
+  viewEditor = mountEditor($("viewStage"), scan, { meta: $("viewMeta"), save: $("saveView"), tools: $("viewTools") });
 }
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape" && $("viewer").classList.contains("open")) $("closeView").click();
+  if (e.key === "Escape" && $("viewer").classList.contains("open") && document.activeElement !== $("viewName")) $("closeView").click();
 });
+
+// Renaming: saved on Enter or when the field loses focus; Esc undoes the edit
+async function saveName() {
+  const scan = scans.find(s => s.name === viewing), input = $("viewName");
+  if (!scan || input.disabled || input.value.trim() === scan.title) { if (scan) input.value = scan.title; return; }
+  const r = await fetch(`/api/scans/${scan.name}/title`, { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: input.value }) });
+  if (!r.ok) { input.value = scan.title; return; }
+  scan.title = (await r.json()).title;
+  if (viewing === scan.name) input.value = scan.title;
+  const tile = document.querySelector(`.thumb[data-name="${scan.name}"]`);
+  if (tile) tile.title = scan.title;
+}
+$("viewName").addEventListener("keydown", e => {
+  if (e.key === "Enter") e.target.blur();
+  if (e.key === "Escape") { e.target.value = scans.find(s => s.name === viewing)?.title ?? ""; e.target.blur(); }
+});
+$("viewName").addEventListener("blur", saveName);
+$("viewName").addEventListener("focus", e => e.target.select());
 $("closeView").onclick = () => { $("viewer").classList.remove("open"); viewEditor?.destroy(); viewEditor = null; viewing = null; };
 $("delView").onclick = async () => {
   if (!confirm("Delete this scan?")) return;
