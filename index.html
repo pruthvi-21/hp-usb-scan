@@ -171,6 +171,12 @@
   .crop-h.edge::after { background: var(--on-primary); box-shadow: 0 0 0 2px var(--primary), 0 1px 3px rgba(0,0,0,.4); }
   .crop-h.edge.tb { cursor: ns-resize; } .crop-h.edge.tb::after { left: 8px; top: 17px; width: 24px; height: 6px; }
   .crop-h.edge.lr { cursor: ew-resize; } .crop-h.edge.lr::after { left: 17px; top: 8px; width: 6px; height: 24px; }
+  /* Loupe: zoomed view of the spot under the handle being dragged */
+  .loupe { position: absolute; left: 0; top: 0; width: 112px; height: 112px; border-radius: var(--r-md);
+    overflow: hidden; background: #000; pointer-events: none; z-index: 3; opacity: 0; transition: opacity .12s;
+    box-shadow: 0 0 0 2px var(--primary), 0 6px 20px rgba(0, 0, 0, .55); }
+  .loupe.show { opacity: 1; }
+  .loupe canvas { display: block; width: 100%; height: 100%; }
   .crop-tools { display: flex; justify-content: center; gap: 4px; min-height: 36px; }
   .crop-tools .text-btn { margin: 0; }
   /* Eye button: hover (mouse) or press and hold (touch) to see the cropped result */
@@ -424,8 +430,9 @@ function createCropper(host, src, initial, onChange) {
   el.className = "crop";
   el.innerHTML = '<img alt="Scan"><svg class="crop-svg" viewBox="0 0 1000 1000" preserveAspectRatio="none"><path/></svg>' +
     [0, 1, 2, 3].map(i => `<span class="crop-h" data-c="${i}"></span>`).join("") +
-    [0, 1, 2, 3].map(i => `<span class="crop-h edge ${i % 2 ? "lr" : "tb"}" data-e="${i}"></span>`).join("");
-  const img = el.querySelector("img"), path = el.querySelector("path");
+    [0, 1, 2, 3].map(i => `<span class="crop-h edge ${i % 2 ? "lr" : "tb"}" data-e="${i}"></span>`).join("") +
+    '<div class="loupe"><canvas></canvas></div>';
+  const img = el.querySelector("img"), path = el.querySelector("path"), loupe = el.querySelector(".loupe");
   const cornerEls = [...el.querySelectorAll("[data-c]")], edgeEls = [...el.querySelectorAll("[data-e]")];
   const copy = pts => pts.map(p => [...p]);
   const start = copy(initial || FULL);
@@ -460,6 +467,48 @@ function createCropper(host, src, initial, onChange) {
     return hit;
   }
   const local = e => { const r = el.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
+
+  // Loupe: the full-resolution image around the dragged handle, zoomed well past the on-screen
+  // size, with the crop edges and a crosshair, floating above the finger so it isn't covered
+  const LOUPE = 112, GAP = 36;
+  function drawLoupe() {
+    if (!drag || drag.kind === "move" || !img.naturalWidth) return;
+    const W = img.naturalWidth, H = img.naturalHeight, ew = el.clientWidth, eh = el.clientHeight;
+    const i = drag.i, j = (i + 1) % 4;
+    const [fx, fy] = drag.kind === "corner" ? pts[i] : [(pts[i][0] + pts[j][0]) / 2, (pts[i][1] + pts[j][1]) / 2];
+    const hx = fx * ew, hy = fy * eh;  // handle position on screen
+
+    // Above the handle; below it if there's no room; kept inside the image area sideways
+    let lx = clamp(hx - LOUPE / 2, -12, ew - LOUPE + 12), ly = hy - LOUPE - GAP;
+    if (ly < -12) ly = hy + GAP;
+    loupe.style.transform = `translate(${lx}px, ${ly}px)`;
+
+    const dpr = devicePixelRatio || 1, cv = loupe.querySelector("canvas");
+    if (cv.width !== LOUPE * dpr) { cv.width = cv.height = LOUPE * dpr; }
+    const ctx = cv.getContext("2d");
+    // 4x the on-screen size, but never beyond 2 screen px per image px (just blur past that)
+    const zoom = Math.min(4 * ew / W, 2) * dpr;         // loupe device px per image px
+    const span = cv.width / zoom;                        // image px across the loupe
+    const sx = fx * W - span / 2, sy = fy * H - span / 2;
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, sx, sy, span, span, 0, 0, cv.width, cv.height);
+
+    // Crop outline near the point, then a crosshair on the exact spot
+    const toLoupe = ([x, y]) => [(x * W - sx) * zoom, (y * H - sy) * zoom];
+    const primary = getComputedStyle(el).getPropertyValue("--primary").trim() || "#4285f4";
+    ctx.lineWidth = 2 * dpr; ctx.strokeStyle = primary;
+    ctx.beginPath();
+    pts.forEach((p, k) => { const [x, y] = toLoupe(p); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.closePath(); ctx.stroke();
+    const c = cv.width / 2, r = 7 * dpr;
+    ctx.lineWidth = 1.5 * dpr; ctx.strokeStyle = "#fff";
+    ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = 2 * dpr;
+    ctx.beginPath();
+    ctx.moveTo(c - r, c); ctx.lineTo(c + r, c); ctx.moveTo(c, c - r); ctx.lineTo(c, c + r);
+    ctx.stroke(); ctx.shadowBlur = 0;
+    loupe.classList.add("show");
+  }
   const ro = new ResizeObserver(fit);
   ro.observe(host);
 
@@ -470,6 +519,7 @@ function createCropper(host, src, initial, onChange) {
     e.preventDefault();
     drag = { kind, i: +(t.c ?? t.e ?? 0), x: e.clientX, y: e.clientY, from: copy(pts), W: el.clientWidth, H: el.clientHeight };
     try { el.setPointerCapture(e.pointerId); } catch {}  // keep the drag if the finger leaves the image
+    drawLoupe();
   });
   el.addEventListener("pointermove", e => {
     if (!drag) { el.style.cursor = inside(...local(e)) ? "move" : ""; return; }
@@ -499,6 +549,7 @@ function createCropper(host, src, initial, onChange) {
     }
     pts = next;
     render(); onChange();
+    drawLoupe();
   });
   // Convex, with every corner at least MIN_ANGLE and every edge a usable length. Measured in image
   // pixels (not fractions) so the aspect ratio doesn't distort angles; matches the server's check.
@@ -513,7 +564,7 @@ function createCropper(host, src, initial, onChange) {
     }
     return true;
   }
-  const end = () => { drag = null; };
+  const end = () => { drag = null; loupe.classList.remove("show"); };
   el.addEventListener("pointerup", end);
   el.addEventListener("pointercancel", end);
 
