@@ -160,11 +160,12 @@
     .viewer .actions { max-width: 560px; width: 100%; align-self: center; padding-bottom: 20px; }
   }
   /* Cropper: the image, an SVG shade with a hole for the crop area, and draggable handles */
-  .crop { position: relative; touch-action: none; user-select: none; -webkit-user-select: none; flex: none; }
-  .crop img { width: 100%; height: 100%; display: block; background: #fff; border-radius: var(--r-sm);
-    box-shadow: 0 1px 3px rgba(0,0,0,.2); pointer-events: none; }
-  .crop-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
-  .crop-svg path { fill: rgba(0, 0, 0, .55); fill-rule: evenodd; }
+  /* Cropper: the page drawn already straightened (WebGL), a fixed rectangular frame, and handles */
+  .crop { position: relative; width: 100%; height: 100%; touch-action: none; user-select: none;
+    -webkit-user-select: none; flex: none; }
+  .crop canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .crop.clean .crop-h { opacity: 0; pointer-events: none; }
+  .crop-h { transition: opacity .15s; }
   .crop-h { position: absolute; width: 40px; height: 40px; margin: -20px 0 0 -20px; cursor: move; }
   .crop-h::after { content: ""; position: absolute; left: 13px; top: 13px; width: 14px; height: 14px;
     background: var(--primary); border-radius: var(--r-sm); box-shadow: 0 1px 3px rgba(0,0,0,.4); }
@@ -178,15 +179,6 @@
     -webkit-user-select: none; -webkit-touch-callout: none; }
   .crop-tools .peek svg { width: 18px; height: 18px; fill: currentColor; }
   .crop-tools .peek.on { background: var(--tonal); color: var(--on-tonal); }
-  .crop-peek { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    padding: inherit; background: var(--scrim); opacity: 0; transition: opacity .16s ease-out; pointer-events: none; z-index: 1; }
-  .crop-peek.show { opacity: 1; }
-  .crop-peek .result { position: relative; overflow: hidden; background: #fff; border-radius: var(--r-sm);
-    box-shadow: 0 1px 3px rgba(0,0,0,.2); flex: none; }
-  .crop-peek canvas { display: block; width: 100%; height: 100%; }
-  .crop-peek .tag { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); font-size: 12px; font-weight: 500;
-    background: var(--surface-high); color: var(--text); padding: 4px 8px; border-radius: var(--r-sm);
-    font-variant-numeric: tabular-nums; white-space: nowrap; }
   .crop-tools .hint { font-size: 13px; color: var(--muted); align-self: center; }
   .paper { background: var(--surface); border: 1px dashed var(--outline); border-radius: var(--r-sm);
     max-width: 100%; max-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -413,131 +405,9 @@ async function loadScans() {
 
 
 // ---------- Cropper ----------
-const FULL = [[0, 0], [1, 0], [1, 1], [0, 1]];
-const MIN_ANGLE = 8 * Math.PI / 180;  // sharpest corner allowed; keep in sync with server.py  // corners: top-left, top-right, bottom-right, bottom-left
+const FULL = [[0, 0], [1, 0], [1, 1], [0, 1]];  // corners: top-left, top-right, bottom-right, bottom-left
+const MIN_ANGLE = 8 * Math.PI / 180;  // sharpest corner allowed; keep in sync with server.py
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
-
-// Crop area over an image with four independently draggable corners. Edge handles move
-// their two corners together; dragging inside moves the whole area. Corners are fractions.
-function createCropper(host, src, initial, onChange) {
-  const el = document.createElement("div");
-  el.className = "crop";
-  el.innerHTML = '<img alt="Scan"><svg class="crop-svg" viewBox="0 0 1000 1000" preserveAspectRatio="none"><path/></svg>' +
-    [0, 1, 2, 3].map(i => `<span class="crop-h" data-c="${i}"></span>`).join("") +
-    [0, 1, 2, 3].map(i => `<span class="crop-h edge ${i % 2 ? "lr" : "tb"}" data-e="${i}"></span>`).join("");
-  const img = el.querySelector("img"), path = el.querySelector("path");
-  const cornerEls = [...el.querySelectorAll("[data-c]")], edgeEls = [...el.querySelectorAll("[data-e]")];
-  const copy = pts => pts.map(p => [...p]);
-  const start = copy(initial || FULL);
-  let pts = copy(start), drag = null;
-
-  // Fit the image inside the host, keeping its aspect ratio
-  function fit() {
-    if (!img.naturalWidth) return;
-    const cs = getComputedStyle(host);
-    const aw = host.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-    const ah = host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-    const k = Math.max(Math.min(aw / img.naturalWidth, ah / img.naturalHeight), 0);
-    el.style.width = img.naturalWidth * k + "px";
-    el.style.height = img.naturalHeight * k + "px";
-  }
-  function render() {
-    const P = pts.map(([x, y]) => `${x * 1000} ${y * 1000}`);
-    path.setAttribute("d", `M0 0H1000V1000H0Z M${P[0]} L${P[1]} L${P[2]} L${P[3]} Z`);
-    const place = (node, x, y) => { node.style.left = x * 100 + "%"; node.style.top = y * 100 + "%"; };
-    pts.forEach((p, i) => place(cornerEls[i], p[0], p[1]));
-    edgeEls.forEach((node, i) => {
-      const a = pts[i], b = pts[(i + 1) % 4];
-      place(node, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
-    });
-  }
-  function inside(x, y) {  // point-in-polygon, in fractions
-    let hit = false;
-    for (let i = 0, j = 3; i < 4; j = i++) {
-      const [xi, yi] = pts[i], [xj, yj] = pts[j];
-      if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) hit = !hit;
-    }
-    return hit;
-  }
-  const local = e => { const r = el.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
-  const ro = new ResizeObserver(fit);
-  ro.observe(host);
-
-  el.addEventListener("pointerdown", e => {
-    const t = e.target.dataset || {};
-    const kind = t.c != null ? "corner" : t.e != null ? "edge" : inside(...local(e)) ? "move" : null;
-    if (!kind) return;
-    e.preventDefault();
-    el.setPointerCapture(e.pointerId);
-    drag = { kind, i: +(t.c ?? t.e ?? 0), x: e.clientX, y: e.clientY, from: copy(pts), W: el.clientWidth, H: el.clientHeight };
-  });
-  el.addEventListener("pointermove", e => {
-    if (!drag) { el.style.cursor = inside(...local(e)) ? "move" : ""; return; }
-    let dx = (e.clientX - drag.x) / drag.W, dy = (e.clientY - drag.y) / drag.H;
-    const from = drag.from;
-    let next;
-    if (drag.kind === "corner") {
-      next = copy(from);
-      next[drag.i] = [clamp(from[drag.i][0] + dx, 0, 1), clamp(from[drag.i][1] + dy, 0, 1)];
-    } else {
-      // Edges move straight in or out (top/bottom vertically, sides horizontally); "move" shifts everything
-      const idx = drag.kind === "edge" ? [drag.i, (drag.i + 1) % 4] : [0, 1, 2, 3];
-      if (drag.kind === "edge") drag.i % 2 ? (dy = 0) : (dx = 0);
-      const xs = idx.map(i => from[i][0]), ys = idx.map(i => from[i][1]);
-      dx = clamp(dx, -Math.min(...xs), 1 - Math.max(...xs));
-      dy = clamp(dy, -Math.min(...ys), 1 - Math.max(...ys));
-      next = copy(from);
-      idx.forEach(i => { next[i] = [from[i][0] + dx, from[i][1] + dy]; });
-    }
-    // Never let a corner cross the diagonal of its neighbours (folding the shape): if this move
-    // would, stop at the furthest valid point between the last good shape and the requested one
-    if (!convex(next)) {
-      const lerp = t => pts.map((p, i) => [p[0] + (next[i][0] - p[0]) * t, p[1] + (next[i][1] - p[1]) * t]);
-      let lo = 0, hi = 1;
-      for (let n = 0; n < 14; n++) { const mid = (lo + hi) / 2; convex(lerp(mid)) ? (lo = mid) : (hi = mid); }
-      next = lerp(lo);
-    }
-    pts = next;
-    render(); onChange();
-  });
-  // Convex, with every corner at least MIN_ANGLE and every edge a usable length. Measured in image
-  // pixels (not fractions) so the aspect ratio doesn't distort angles; matches the server's check.
-  function convex(p) {
-    const W = img.naturalWidth || el.clientWidth || 1, H = img.naturalHeight || el.clientHeight || 1;
-    const P = p.map(([x, y]) => [x * W, y * H]), minLen = 0.02 * Math.min(W, H);
-    for (let i = 0; i < 4; i++) {
-      const [a, b, c] = [P[i], P[(i + 1) % 4], P[(i + 2) % 4]];
-      const e1 = [b[0] - a[0], b[1] - a[1]], e2 = [c[0] - b[0], c[1] - b[1]];
-      const l1 = Math.hypot(...e1), l2 = Math.hypot(...e2);
-      if (l1 < minLen || e1[0] * e2[1] - e1[1] * e2[0] < Math.sin(MIN_ANGLE) * l1 * l2) return false;
-    }
-    return true;
-  }
-  const end = () => { drag = null; };
-  el.addEventListener("pointerup", end);
-  el.addEventListener("pointercancel", end);
-
-  const differs = (a, b) => a.some((p, i) => Math.abs(p[0] - b[i][0]) > 0.002 || Math.abs(p[1] - b[i][1]) > 0.002);
-  img.onload = () => { fit(); onChange(); };
-  img.src = src;
-  render();
-  return {
-    el, img,
-    get corners() { return pts; },
-    // Output size in pixels, computed the same way as the server (for the current corners by default)
-    size(corners = pts) {
-      const W = img.naturalWidth, H = img.naturalHeight;
-      const P = corners.map(([x, y]) => [x * W, y * H]);
-      const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-      return [Math.round(Math.max(d(P[0], P[1]), d(P[3], P[2]))), Math.round(Math.max(d(P[0], P[3]), d(P[1], P[2])))];
-    },
-    startSize() { return this.size(start); },
-    changed: () => differs(pts, start),
-    isFull: () => !differs(pts, FULL),
-    reset() { pts = copy(start); render(); onChange(); },
-    destroy() { ro.disconnect(); },
-  };
-}
 
 // Projective transform taking 4 source points onto 4 destination points, as the 8 coefficients
 // [a b c d e f g h] of x' = (ax + by + c) / (gx + hy + 1), y' = (dx + ey + f) / (gx + hy + 1)
@@ -560,68 +430,230 @@ function homography(src, dst) {
   }
   return m.map((row, i) => row[8] / row[i]);
 }
-
-// Pixels of a cropper's image, downscaled to at most `max` px on the long side (cached per image)
-const sourceCache = new WeakMap();
-function sourcePixels(img, max = 2400) {
-  let src = sourceCache.get(img);
-  if (!src || src.url !== img.src) {
-    const s = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
-    const cv = document.createElement("canvas");
-    cv.width = Math.round(img.naturalWidth * s); cv.height = Math.round(img.naturalHeight * s);
-    const ctx = cv.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(img, 0, 0, cv.width, cv.height);
-    src = { url: img.src, scale: s, width: cv.width, height: cv.height,
-      data: ctx.getImageData(0, 0, cv.width, cv.height).data };
-    sourceCache.set(img, src);
-  }
-  return src;
+// Apply a homography to a point; null when the point is beyond the horizon (no valid mapping)
+function applyH([a, b, c, d, e, f, g, h], [x, y]) {
+  const q = g * x + h * y + 1;
+  return q > 1e-9 ? [(a * x + b * y + c) / q, (d * x + e * y + f) / q] : null;
 }
 
-// Overlay showing what the crop will produce, fitted into `host`. Each output pixel is traced
-// back through the same corner mapping the server uses and sampled (bilinear) from the image.
-// (A CSS matrix3d warp looked right in theory but Chrome rasterizes large perspective layers
-// in approximate tiles, which skewed the text and dropped parts of the page.)
-function cropPeek(host, c) {
-  const [w, h] = c.size();
-  const cs = getComputedStyle(host);
-  const aw = host.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-  const ah = host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-  const k = Math.min(aw / w, ah / h);
+// Draws the whole page warped so the crop area fills `frame`, dimming what's outside it.
+// WebGL computes the perspective exactly per pixel; a (slower) 2D canvas path is the fallback.
+function createWarpRenderer(canvas, img) {
+  const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
+  const maxSide = gl ? Math.min(4096, gl.getParameter(gl.MAX_TEXTURE_SIZE)) : 1600;
+  const s = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+  const src = document.createElement("canvas");
+  src.width = Math.round(img.naturalWidth * s); src.height = Math.round(img.naturalHeight * s);
+  const sctx = src.getContext("2d", { willReadFrequently: !gl });
+  sctx.drawImage(img, 0, 0, src.width, src.height);
 
-  const el = document.createElement("div");
-  el.className = "crop-peek";
-  el.innerHTML = `<div class="result" style="width:${w * k}px;height:${h * k}px"><canvas></canvas></div>` +
-    `<span class="tag">Result · ${w} × ${h}</span>`;
-
-  const src = sourcePixels(c.img);
-  const ow = Math.max(1, Math.round(w * k * devicePixelRatio)), oh = Math.max(1, Math.round(h * k * devicePixelRatio));
-  const quad = c.corners.map(([x, y]) => [x * src.width, y * src.height]);
-  const [a, b, cc, d, e, f, g, hh] = homography([[0, 0], [ow, 0], [ow, oh], [0, oh]], quad);
-  const canvas = el.querySelector("canvas");
-  canvas.width = ow; canvas.height = oh;
-  const ctx = canvas.getContext("2d");
-  const out = ctx.createImageData(ow, oh), o = out.data, p = src.data, SW = src.width, SH = src.height;
-  for (let y = 0, i = 0; y < oh; y++) {
-    const yc = y + 0.5;
-    for (let x = 0; x < ow; x++, i += 4) {
-      const xc = x + 0.5, q = g * xc + hh * yc + 1;
-      let sx = (a * xc + b * yc + cc) / q - 0.5, sy = (d * xc + e * yc + f) / q - 0.5;
-      sx = sx < 0 ? 0 : sx > SW - 1 ? SW - 1 : sx;
-      sy = sy < 0 ? 0 : sy > SH - 1 ? SH - 1 : sy;
-      const x0 = sx | 0, y0 = sy | 0, x1 = x0 + 1 < SW ? x0 + 1 : x0, y1 = y0 + 1 < SH ? y0 + 1 : y0;
-      const fx = sx - x0, fy = sy - y0;
-      const i00 = (y0 * SW + x0) * 4, i10 = (y0 * SW + x1) * 4, i01 = (y1 * SW + x0) * 4, i11 = (y1 * SW + x1) * 4;
-      for (let ch = 0; ch < 3; ch++) {
-        const top = p[i00 + ch] + (p[i10 + ch] - p[i00 + ch]) * fx;
-        const bot = p[i01 + ch] + (p[i11 + ch] - p[i01 + ch]) * fx;
-        o[i + ch] = top + (bot - top) * fy;
-      }
-      o[i + 3] = 255;
+  if (gl) {
+    const isGL2 = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
+    const vs = `attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }`;
+    const fs = `precision highp float;
+      uniform mat3 inv; uniform vec4 frame; uniform vec2 size; uniform float dim; uniform sampler2D tex;
+      void main() {
+        vec2 px = vec2(gl_FragCoord.x, size.y - gl_FragCoord.y);
+        vec3 q = inv * vec3(px, 1.0);
+        vec2 uv = q.xy / q.z;
+        if (q.z <= 0.0 || uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+        vec3 c = texture2D(tex, uv).rgb;
+        bool inside = px.x >= frame.x && px.y >= frame.y && px.x <= frame.z && px.y <= frame.w;
+        gl_FragColor = vec4(inside ? c : c * dim, 1.0);
+      }`;
+    const shader = (type, code) => { const sh = gl.createShader(type); gl.shaderSource(sh, code); gl.compileShader(sh); return sh; };
+    const prog = gl.createProgram();
+    gl.attachShader(prog, shader(gl.VERTEX_SHADER, vs));
+    gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(prog); gl.useProgram(prog);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(prog, "p");
+    gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    if (isGL2) {  // mipmaps keep thin pen strokes from shimmering when the page is shown small
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    } else {
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     }
+    const u = n => gl.getUniformLocation(prog, n);
+    return {
+      // inv: canvas device px -> image uv; frame: [x0, y0, x1, y1] in device px
+      draw(inv, frame, dim) {
+        const [a, b, c, d, e, f, g, h] = inv;
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.uniformMatrix3fv(u("inv"), false, [a, d, g, b, e, h, c, f, 1]);
+        gl.uniform4f(u("frame"), ...frame);
+        gl.uniform2f(u("size"), canvas.width, canvas.height);
+        gl.uniform1f(u("dim"), dim);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      },
+    };
   }
-  ctx.putImageData(out, 0, 0);
-  return el;
+
+  // Fallback: trace each canvas pixel back into the image (nearest sample, at 1x to stay responsive)
+  const data = sctx.getImageData(0, 0, src.width, src.height).data, SW = src.width, SH = src.height;
+  const ctx = canvas.getContext("2d");
+  return {
+    draw(inv, frame, dim) {
+      const W = canvas.width, H = canvas.height, out = ctx.createImageData(W, H), o = out.data;
+      for (let y = 0, i = 0; y < H; y++) {
+        for (let x = 0; x < W; x++, i += 4) {
+          const p = applyH(inv, [x + 0.5, y + 0.5]);
+          o[i + 3] = 255;
+          if (!p || p[0] < 0 || p[1] < 0 || p[0] > 1 || p[1] > 1) continue;
+          const j = ((Math.min(SH - 1, p[1] * SH | 0)) * SW + Math.min(SW - 1, p[0] * SW | 0)) * 4;
+          const k = x >= frame[0] && y >= frame[1] && x <= frame[2] && y <= frame[3] ? 1 : dim;
+          o[i] = data[j] * k; o[i + 1] = data[j + 1] * k; o[i + 2] = data[j + 2] * k;
+        }
+      }
+      ctx.putImageData(out, 0, 0);
+    },
+  };
+}
+
+// Perspective cropper in the style of Google Photos: the frame stays a rectangle and the page
+// bends under it. Dragging a corner handle picks the point of the page that becomes that corner;
+// edge handles move a side; dragging inside pans. The state is still the crop's four corners on
+// the original image (fractions, TL/TR/BR/BL), which is what the server crops with.
+function createCropper(host, src, initial, onChange) {
+  const MARGIN = 32;  // px around the frame, so handles and some of the page outside stay visible
+  const el = document.createElement("div");
+  el.className = "crop";
+  el.innerHTML = '<canvas></canvas>' +
+    [0, 1, 2, 3].map(i => `<span class="crop-h" data-c="${i}"></span>`).join("") +
+    [0, 1, 2, 3].map(i => `<span class="crop-h edge ${i % 2 ? "lr" : "tb"}" data-e="${i}"></span>`).join("");
+  const canvas = el.querySelector("canvas");
+  const img = new Image();
+  const cornerEls = [...el.querySelectorAll("[data-c]")], edgeEls = [...el.querySelectorAll("[data-e]")];
+  const copy = pts => pts.map(p => [...p]);
+  const start = copy(initial || FULL);
+  let pts = copy(start), drag = null, renderer = null, clean = false, view = null;
+
+  // Output size in image pixels, computed the same way as the server
+  function size(corners = pts) {
+    const W = img.naturalWidth, H = img.naturalHeight;
+    const P = corners.map(([x, y]) => [x * W, y * H]);
+    const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+    return [Math.round(Math.max(d(P[0], P[1]), d(P[3], P[2]))), Math.round(Math.max(d(P[0], P[3]), d(P[1], P[2])))];
+  }
+
+  // Frame (CSS px) that fits the output's aspect ratio, and the mapping from CSS px to image fractions
+  function layout(corners = pts) {
+    const cw = el.clientWidth, ch = el.clientHeight, [w, h] = size(corners);
+    const k = Math.max(Math.min((cw - 2 * MARGIN) / w, (ch - 2 * MARGIN) / h), 0.0001);
+    const x0 = (cw - w * k) / 2, y0 = (ch - h * k) / 2, x1 = x0 + w * k, y1 = y0 + h * k;
+    const frame = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    return { frame, rect: [x0, y0, x1, y1], toImage: homography(frame, corners) };
+  }
+
+  function render() {
+    if (!img.naturalWidth || !el.clientWidth) return;
+    const dpr = devicePixelRatio || 1;
+    const W = Math.round(el.clientWidth * dpr), H = Math.round(el.clientHeight * dpr);
+    if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+    renderer ||= createWarpRenderer(canvas, img);
+    view = layout();
+    const devFrame = view.frame.map(([x, y]) => [x * dpr, y * dpr]);
+    renderer.draw(homography(devFrame, pts), view.rect.map(v => v * dpr), clean ? 0 : 0.4);
+    const place = (node, [x, y]) => { node.style.left = x + "px"; node.style.top = y + "px"; };
+    view.frame.forEach((p, i) => place(cornerEls[i], p));
+    edgeEls.forEach((node, i) => {
+      const a = view.frame[i], b = view.frame[(i + 1) % 4];
+      place(node, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+    });
+  }
+
+  // Convex, with every corner at least MIN_ANGLE and every edge a usable length. Measured in image
+  // pixels (not fractions) so the aspect ratio doesn't distort angles; matches the server's check.
+  function convex(p) {
+    const W = img.naturalWidth || 1, H = img.naturalHeight || 1;
+    const P = p.map(([x, y]) => [x * W, y * H]), minLen = 0.02 * Math.min(W, H);
+    for (let i = 0; i < 4; i++) {
+      const [a, b, c] = [P[i], P[(i + 1) % 4], P[(i + 2) % 4]];
+      const e1 = [b[0] - a[0], b[1] - a[1]], e2 = [c[0] - b[0], c[1] - b[1]];
+      const l1 = Math.hypot(...e1), l2 = Math.hypot(...e2);
+      if (l1 < minLen || e1[0] * e2[1] - e1[1] * e2[0] < Math.sin(MIN_ANGLE) * l1 * l2) return false;
+    }
+    return true;
+  }
+  const inBounds = p => p.every(([x, y]) => x >= -1e-6 && y >= -1e-6 && x <= 1 + 1e-6 && y <= 1 + 1e-6);
+
+  const ro = new ResizeObserver(render);
+  ro.observe(el);
+
+  el.addEventListener("pointerdown", e => {
+    if (!view) return;
+    const t = e.target.dataset || {};
+    const r = el.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+    const [x0, y0, x1, y1] = view.rect;
+    const kind = t.c != null ? "corner" : t.e != null ? "edge" : x >= x0 && x <= x1 && y >= y0 && y <= y1 ? "move" : null;
+    if (!kind) return;
+    e.preventDefault();
+    // Everything during the drag is measured against the page as it looked when it started
+    drag = { kind, i: +(t.c ?? t.e ?? 0), x: e.clientX, y: e.clientY, frame: view.frame, toImage: view.toImage };
+    try { el.setPointerCapture(e.pointerId); } catch {}  // keep the drag if the finger leaves the stage
+  });
+  el.addEventListener("pointermove", e => {
+    if (!drag) {
+      if (view) {
+        const r = el.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, [x0, y0, x1, y1] = view.rect;
+        el.style.cursor = x >= x0 && x <= x1 && y >= y0 && y <= y1 ? "move" : "";
+      }
+      return;
+    }
+    let dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (drag.kind === "edge") drag.i % 2 ? (dy = 0) : (dx = 0);
+    // Corners at a fraction t of this drag: the page point under the moved frame corner becomes
+    // the new corner. Panning moves the page with the finger, so it looks up the opposite way.
+    const idx = drag.kind === "corner" ? [drag.i] : drag.kind === "edge" ? [drag.i, (drag.i + 1) % 4] : [0, 1, 2, 3];
+    const sign = drag.kind === "move" ? -1 : 1;
+    const at = t => {
+      const next = copy(pts);
+      for (const i of idx) {
+        const p = applyH(drag.toImage, [drag.frame[i][0] + sign * dx * t, drag.frame[i][1] + sign * dy * t]);
+        if (!p) return null;
+        next[i] = drag.kind === "move" ? p : [clamp(p[0], 0, 1), clamp(p[1], 0, 1)];
+      }
+      return next;
+    };
+    const ok = p => p && inBounds(p) && convex(p);
+    let next = at(1);
+    if (!ok(next)) {  // stop at the furthest valid point of this drag (never fold, never leave the page)
+      let lo = 0, hi = 1;
+      for (let n = 0; n < 16; n++) { const mid = (lo + hi) / 2; ok(at(mid)) ? (lo = mid) : (hi = mid); }
+      next = at(lo);
+      if (!ok(next)) return;
+    }
+    pts = next;
+    render(); onChange();
+  });
+  const end = () => { drag = null; };
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+
+  const differs = (a, b) => a.some((p, i) => Math.abs(p[0] - b[i][0]) > 0.002 || Math.abs(p[1] - b[i][1]) > 0.002);
+  img.onload = () => { render(); onChange(); };
+  img.src = src;
+  return {
+    el, img,
+    get corners() { return pts; },
+    size,
+    startSize() { return size(start); },
+    changed: () => differs(pts, start),
+    isFull: () => !differs(pts, FULL),
+    reset() { pts = copy(start); render(); onChange(); },
+    // Hide handles and the dimmed page outside the frame, leaving just the result
+    setClean(on) { clean = on; el.classList.toggle("clean", on); render(); },
+    destroy() { ro.disconnect(); },
+  };
 }
 
 // A scan with a cropper, wired to its Save button and crop tools
@@ -644,24 +676,10 @@ function mountEditor(host, scan, ui) {
   }
   btn("reset").onclick = () => c.reset();
 
-  // Eye button: hover with a mouse, or press and hold on touch, to peek at the result
+  // Eye button: hover with a mouse, or press and hold on touch, to see just the result
   const peek = btn("peek");
-  let peekEl = null;
-  const showPeek = () => {
-    if (peekEl || c.isFull() || !c.img.naturalWidth) return;
-    peekEl = cropPeek(host, c);
-    host.appendChild(peekEl);
-    peek.classList.add("on");
-    peekEl.getBoundingClientRect();  // commit the transparent state so the fade-in runs
-    peekEl.classList.add("show");
-  };
-  const hidePeek = () => {
-    if (!peekEl) return;
-    const el = peekEl; peekEl = null;
-    peek.classList.remove("on");
-    el.classList.remove("show");
-    setTimeout(() => el.remove(), 180);
-  };
+  const showPeek = () => { peek.classList.add("on"); c.setClean(true); };
+  const hidePeek = () => { peek.classList.remove("on"); c.setClean(false); };
   peek.onpointerenter = e => { if (e.pointerType === "mouse") showPeek(); };
   peek.onpointerleave = hidePeek;
   peek.onpointerdown = e => {
