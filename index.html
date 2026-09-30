@@ -79,7 +79,7 @@
   .thumb { position: relative; aspect-ratio: .72; border-radius: var(--r-sm); overflow: hidden;
     background: var(--surface-var); cursor: pointer; }
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .thumb .check { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: var(--r-sm);
+  .thumb .check { position: absolute; top: 6px; right: 6px; min-width: 22px; height: 22px; padding: 0 4px; border-radius: var(--r-sm);
     border: 2px solid #fff; background: rgba(0,0,0,.3); display: none; color: var(--on-primary); font-size: 13px;
     align-items: center; justify-content: center; font-weight: 700; }
   .selecting .thumb .check { display: flex; }
@@ -425,11 +425,11 @@ async function loadScans() {
     el.className = "thumb" + (selected.has(s.name) ? " sel" : "");
     el.dataset.name = s.name;
     el.title = s.title;
-    el.innerHTML = `<img loading="lazy" src="/scans/${s.name}?v=${s.version}" alt=""><span class="check">✓</span>` +
+    el.innerHTML = `<img loading="lazy" src="/scans/${s.name}?v=${s.version}" alt=""><span class="check"></span>` +
       `<div class="hover-actions">${HOVER_ACTIONS}</div>`;
     el.onclick = e => {
       const act = e.target.closest("[data-act]")?.dataset.act;
-      if (selecting) return toggleSel(s.name, el);
+      if (selecting) return toggleSel(s.name);
       if (!act || act === "edit") return openViewer(s.name);
       if (act === "pdf") return openExport([s.name], "pdf");
       if (act === "jpeg") return openExport([s.name], "jpeg");
@@ -437,6 +437,8 @@ async function loadScans() {
     };
     grid.appendChild(el);
   }
+  for (const n of selected) if (!scans.some(s => s.name === n)) selected.delete(n);  // deleted elsewhere
+  renderSelection();
   updateBar();
   if ($("viewer").classList.contains("open")) {
     scans.some(s => s.name === viewing) ? openViewer(viewing) : $("viewer").classList.remove("open");
@@ -957,13 +959,23 @@ $("selectBtn").onclick = () => {
   selecting = !selecting; selected.clear();
   app.classList.toggle("selecting", selecting);
   $("selectBtn").textContent = selecting ? "Cancel" : "Select";
-  document.querySelectorAll(".thumb").forEach(t => t.classList.remove("sel"));
+  renderSelection();
   updateBar();
 };
-function toggleSel(name, el) {
+// `selected` keeps the order scans were picked in (Sets iterate in insertion order);
+// that is the page order of the PDF, shown as a number on each picked scan
+function toggleSel(name) {
   selected.has(name) ? selected.delete(name) : selected.add(name);
-  el.classList.toggle("sel", selected.has(name));
+  renderSelection();
   updateBar();
+}
+function renderSelection() {
+  const order = [...selected];
+  document.querySelectorAll(".thumb[data-name]").forEach(t => {
+    const i = order.indexOf(t.dataset.name);
+    t.classList.toggle("sel", i >= 0);
+    t.querySelector(".check").textContent = i >= 0 ? i + 1 : "";
+  });
 }
 function updateBar() {
   const n = selected.size;
@@ -971,9 +983,7 @@ function updateBar() {
   $("pdfSel").textContent = n ? `Save ${n} as PDF` : "Save as PDF";
 }
 $("pdfSel").onclick = async () => {
-  // Oldest first, so pages come out in the order they were scanned
-  const names = scans.map(s => s.name).filter(n => selected.has(n)).reverse();
-  openExport(names, "pdf");
+  openExport([...selected], "pdf");  // pages in the order they were picked
 };
 $("delSel").onclick = async () => {
   if (!confirm(`Delete ${selected.size} scan(s)?`)) return;

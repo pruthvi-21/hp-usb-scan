@@ -36,7 +36,7 @@ Crops must stay convex: no corner may cross the diagonal of its neighbours, and 
 
 The crop preview (eye button) is drawn on a canvas by inverse-mapping each output pixel through the same homography. Don't switch it to a CSS `matrix3d` warp: the math is right, but Chrome rasterizes large perspective layers in approximate tiles, which skews text and drops chunks of the page.
 
-Save only applies the crop (no download). Exports (tile hover JPEG/PDF, and Select → Save as PDF) go through the export dialog: file name, a compression slider (JPEG quality 10–95, or Original = the scan's own JPEG data untouched) with the exact size from `POST /api/export` with `sizeOnly`, then `showSaveFilePicker` to choose where to save. The picker only exists in desktop Chromium on a secure origin (e.g. `localhost`); elsewhere it falls back to a normal download. Call the picker before any `await`, or the click no longer counts as a user action.
+Save only applies the crop (no download). Exports (tile hover JPEG/PDF, and Select → Save as PDF, whose pages follow the order scans were picked in, shown as numbers on the tiles) go through the export dialog: file name, a compression slider (JPEG quality 10–95, or Original = the scan's own JPEG data untouched) with the exact size from `POST /api/export` with `sizeOnly`, then `showSaveFilePicker` to choose where to save. The picker only exists in desktop Chromium on a secure origin (e.g. `localhost`); elsewhere it falls back to a normal download. Call the picker before any `await`, or the click no longer counts as a user action.
 
 ## UI conventions
 
