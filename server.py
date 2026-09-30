@@ -314,7 +314,7 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(img)
             return self.send(200, {"name": name, "size": len(img)})
 
-        m = re.match(r"^/api/scans/([^/]+)/(crop|restore|title|estimate)$", self.path)
+        m = re.match(r"^/api/scans/([^/]+)/(crop|restore|title)$", self.path)
         if m and NAME_RE.match(m.group(1)):
             name, action = m.groups()
             if not os.path.exists(os.path.join(SCANS, name)):
@@ -334,11 +334,6 @@ class Handler(BaseHTTPRequestHandler):
                 corners = [[float(x), float(y)] for x, y in box["corners"]]
                 if len(corners) != 4:
                     raise ValueError("need 4 corners")
-                if action == "estimate":
-                    # Exact size the crop would produce: render and encode it, without saving
-                    image, dpi, _ = render_crop(crop_source(name), corners)
-                    return self.send(200, {"bytes": len(encode_jpeg(image, dpi)),
-                                           "width": image.width, "height": image.height})
                 crop_scan(name, corners)
             except (KeyError, TypeError, ValueError) as e:
                 return self.send(400, {"error": str(e)})

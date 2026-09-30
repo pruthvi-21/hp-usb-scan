@@ -32,6 +32,10 @@ It prints the LAN URL (IP and `.local`; some Android phones can't resolve `.loca
 
 Crops are four corners (TL, TR, BR, BL fractions). The server always crops from the saved original: an exact crop if the corners form an axis-aligned rectangle, otherwise a perspective warp (`perspective_coeffs` solves the 8×8 system without numpy). Output size = the longest opposite edges. The client's `size()` must match this formula.
 
+The crop preview (eye button) is drawn on a canvas by inverse-mapping each output pixel through the same homography. Don't switch it to a CSS `matrix3d` warp: the math is right, but Chrome rasterizes large perspective layers in approximate tiles, which skews text and drops chunks of the page.
+
+Save only applies the crop (no download); JPEG/PDF export lives on the tile hover actions.
+
 ## UI conventions
 
 - The design matches the user's **Libreel** app (`~/Code/products/libreel/mobile/design`): "boxy" Material 3, 2px corners on controls and 4px on surfaces, flat toggle track with a filled primary pill, pure black dark mode. **Dark mode only** (no light theme), with Google blue as the primary (`#4285f4`, white text on it). Stop is a red outline, not a fill, so it doesn't compete with the Scan button. Colors are CSS tokens on `:root`.

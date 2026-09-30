@@ -183,8 +183,7 @@
   .crop-peek.show { opacity: 1; }
   .crop-peek .result { position: relative; overflow: hidden; background: #fff; border-radius: var(--r-sm);
     box-shadow: 0 1px 3px rgba(0,0,0,.2); flex: none; }
-  .crop-peek .result > div { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
-  .crop-peek img { position: absolute; left: 0; top: 0; transform-origin: 0 0; max-width: none; }
+  .crop-peek canvas { display: block; width: 100%; height: 100%; }
   .crop-peek .tag { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); font-size: 12px; font-weight: 500;
     background: var(--surface-high); color: var(--text); padding: 4px 8px; border-radius: var(--r-sm);
     font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -538,13 +537,29 @@ function homography(src, dst) {
   return m.map((row, i) => row[8] / row[i]);
 }
 
-// Overlay showing what the crop will produce: the image warped by the GPU (CSS matrix3d)
-// with the same corner mapping the server uses, fitted into `host`
+// Pixels of a cropper's image, downscaled to at most `max` px on the long side (cached per image)
+const sourceCache = new WeakMap();
+function sourcePixels(img, max = 2400) {
+  let src = sourceCache.get(img);
+  if (!src || src.url !== img.src) {
+    const s = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const cv = document.createElement("canvas");
+    cv.width = Math.round(img.naturalWidth * s); cv.height = Math.round(img.naturalHeight * s);
+    const ctx = cv.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, cv.width, cv.height);
+    src = { url: img.src, scale: s, width: cv.width, height: cv.height,
+      data: ctx.getImageData(0, 0, cv.width, cv.height).data };
+    sourceCache.set(img, src);
+  }
+  return src;
+}
+
+// Overlay showing what the crop will produce, fitted into `host`. Each output pixel is traced
+// back through the same corner mapping the server uses and sampled (bilinear) from the image.
+// (A CSS matrix3d warp looked right in theory but Chrome rasterizes large perspective layers
+// in approximate tiles, which skewed the text and dropped parts of the page.)
 function cropPeek(host, c) {
-  const W = c.img.naturalWidth, H = c.img.naturalHeight;
   const [w, h] = c.size();
-  const src = c.corners.map(([x, y]) => [x * W, y * H]);
-  const [a, b, cc, d, e, f, g, hh] = homography(src, [[0, 0], [w, 0], [w, h], [0, h]]);
   const cs = getComputedStyle(host);
   const aw = host.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
   const ah = host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
@@ -552,12 +567,36 @@ function cropPeek(host, c) {
 
   const el = document.createElement("div");
   el.className = "crop-peek";
-  el.innerHTML = `<div class="result" style="width:${w * k}px;height:${h * k}px">` +
-    `<div style="transform:scale(${k})"><img alt="" src="${c.img.src}"></div></div>` +
+  el.innerHTML = `<div class="result" style="width:${w * k}px;height:${h * k}px"><canvas></canvas></div>` +
     `<span class="tag">Result · ${w} × ${h}</span>`;
-  const img = el.querySelector("img");
-  img.style.width = W + "px"; img.style.height = H + "px";
-  img.style.transform = `matrix3d(${a},${d},0,${g},${b},${e},0,${hh},0,0,1,0,${cc},${f},0,1)`;
+
+  const src = sourcePixels(c.img);
+  const ow = Math.max(1, Math.round(w * k * devicePixelRatio)), oh = Math.max(1, Math.round(h * k * devicePixelRatio));
+  const quad = c.corners.map(([x, y]) => [x * src.width, y * src.height]);
+  const [a, b, cc, d, e, f, g, hh] = homography([[0, 0], [ow, 0], [ow, oh], [0, oh]], quad);
+  const canvas = el.querySelector("canvas");
+  canvas.width = ow; canvas.height = oh;
+  const ctx = canvas.getContext("2d");
+  const out = ctx.createImageData(ow, oh), o = out.data, p = src.data, SW = src.width, SH = src.height;
+  for (let y = 0, i = 0; y < oh; y++) {
+    const yc = y + 0.5;
+    for (let x = 0; x < ow; x++, i += 4) {
+      const xc = x + 0.5, q = g * xc + hh * yc + 1;
+      let sx = (a * xc + b * yc + cc) / q - 0.5, sy = (d * xc + e * yc + f) / q - 0.5;
+      sx = sx < 0 ? 0 : sx > SW - 1 ? SW - 1 : sx;
+      sy = sy < 0 ? 0 : sy > SH - 1 ? SH - 1 : sy;
+      const x0 = sx | 0, y0 = sy | 0, x1 = x0 + 1 < SW ? x0 + 1 : x0, y1 = y0 + 1 < SH ? y0 + 1 : y0;
+      const fx = sx - x0, fy = sy - y0;
+      const i00 = (y0 * SW + x0) * 4, i10 = (y0 * SW + x1) * 4, i01 = (y1 * SW + x0) * 4, i11 = (y1 * SW + x1) * 4;
+      for (let ch = 0; ch < 3; ch++) {
+        const top = p[i00 + ch] + (p[i10 + ch] - p[i00 + ch]) * fx;
+        const bot = p[i01 + ch] + (p[i11 + ch] - p[i01 + ch]) * fx;
+        o[i + ch] = top + (bot - top) * fy;
+      }
+      o[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(out, 0, 0);
   return el;
 }
 
@@ -569,37 +608,15 @@ function mountEditor(host, scan, ui) {
   const btn = act => ui.tools.querySelector(`[data-act=${act}]`);
   function sync() {
     const changed = c.changed();
-    ui.save.textContent = changed ? "Crop & save" : "Save";
+    ui.save.disabled = !changed;  // Save applies the crop; exports live on the tile actions
     btn("reset").hidden = !changed;
     btn("restore").hidden = !scan.crop || changed;
     btn("peek").hidden = c.isFull();
     ui.tools.querySelector(".hint").hidden = changed || !!scan.crop;
     if (ui.meta && c.img.naturalWidth) {
-      const [cw, ch] = c.startSize(), [w, h] = c.size(), now = `${cw} × ${ch} · ${fmtSize(scan.size)}`;
-      if (!changed) {
-        ui.meta.textContent = now;
-      } else {
-        const key = JSON.stringify(c.corners);
-        if (key !== est.key) estimate(key);
-        ui.meta.innerHTML = `${now} → <b>${w} × ${h} · ${est.bytes == null ? "…" : fmtSize(est.bytes)}</b>`;
-      }
+      const [cw, ch] = c.startSize(), [w, h] = c.size();
+      ui.meta.innerHTML = changed ? `${cw} × ${ch} → <b>${w} × ${h}</b>` : `${cw} × ${ch}`;
     }
-  }
-
-  // Exact size of the cropped file, from the server rendering the crop without saving it.
-  // Asked for once dragging pauses; answers for older corner positions are dropped.
-  const est = { key: null, bytes: null, timer: 0, ctl: null };
-  function estimate(key) {
-    Object.assign(est, { key, bytes: null });
-    clearTimeout(est.timer); est.ctl?.abort();
-    est.timer = setTimeout(async () => {
-      est.ctl = new AbortController();
-      try {
-        const r = await fetch(`/api/scans/${scan.name}/estimate`, { method: "POST", signal: est.ctl.signal,
-          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ corners: c.corners }) });
-        if (r.ok && est.key === key) { est.bytes = (await r.json()).bytes; sync(); }
-      } catch {}
-    }, 350);
   }
   btn("reset").onclick = () => c.reset();
 
@@ -637,17 +654,17 @@ function mountEditor(host, scan, ui) {
     await loadScans();
   };
   ui.save.onclick = async () => {
-    if (c.changed()) {
-      ui.save.disabled = true; ui.save.textContent = "Cropping…";
-      const r = c.isFull()
-        ? await fetch(`/api/scans/${scan.name}/restore`, { method: "POST" })
-        : await fetch(`/api/scans/${scan.name}/crop`, { method: "POST",
-            headers: { "Content-Type": "application/json" }, body: JSON.stringify({ corners: c.corners }) });
-      ui.save.disabled = false;
-      if (!r.ok) { alert((await r.json()).error || "Could not crop"); sync(); return; }
-      await loadScans();
-    }
-    download(scan.name);
+    if (!c.changed()) return;
+    const save = ui.save;
+    save.disabled = true; save.textContent = "Saving…";
+    const r = c.isFull()
+      ? await fetch(`/api/scans/${scan.name}/restore`, { method: "POST" })
+      : await fetch(`/api/scans/${scan.name}/crop`, { method: "POST",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ corners: c.corners }) });
+    if (!r.ok) { alert((await r.json()).error || "Could not crop"); save.textContent = "Save"; sync(); return; }
+    await loadScans();  // reopens the viewer on the saved scan
+    save.textContent = "Saved";
+    setTimeout(() => { if (save.textContent === "Saved") save.textContent = "Save"; }, 1500);
   };
   host.replaceChildren(c.el);
   sync();
