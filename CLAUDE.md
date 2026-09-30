@@ -35,7 +35,7 @@ Crops are four corners (TL, TR, BR, BL fractions). The server always crops from 
 ## UI conventions
 
 - The design matches the user's **Libreel** app (`~/Code/products/libreel/mobile/design`): "boxy" Material 3, 2px corners on controls and 4px on surfaces, flat toggle track with a filled primary pill, pure black dark mode. **Dark mode only** (no light theme), with Google blue as the primary (`#4285f4`, white text on it). Stop is a red outline, not a fill, so it doesn't compete with the Scan button. Colors are CSS tokens on `:root`.
-- At ≥ 840px width: controls on the left, all scans in a large grid on the right. Below that, scans sit under the controls. Tapping a scan (or the in-progress tile) opens the full-screen viewer with the cropper on every screen size; there is no separate preview pane (yet).
+- At ≥ 840px width: controls on the left, all scans in a large grid on the right. Below that, scans sit under the controls. Opening a scan (or the in-progress tile) shows the viewer with the cropper: on wide screens it replaces only the scans column so the controls stay usable; on small screens it covers the whole screen. Esc closes it.
 - Keep it dependency-free on the front end, and keep the Python side to `pyusb` + `Pillow`.
 
 ## Git

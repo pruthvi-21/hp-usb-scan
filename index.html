@@ -144,6 +144,10 @@
     .gallery .list-head { margin-top: 4px; }
     .gallery .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding-bottom: 32px; }
     .gallery .bar { position: sticky; bottom: 0; margin: auto -24px 0; }
+    /* The viewer replaces the scans column, leaving the controls usable */
+    .viewer { position: static; grid-column: 2; grid-row: 1; z-index: auto; min-width: 0; min-height: 0; }
+    .layout:has(.viewer.open) .gallery { display: none; }
+    .viewer .actions { max-width: 560px; width: 100%; align-self: center; padding-bottom: 20px; }
   }
   /* Cropper: the image, an SVG shade with a hole for the crop area, and draggable handles */
   .crop { position: relative; touch-action: none; user-select: none; -webkit-user-select: none; flex: none; }
@@ -241,21 +245,21 @@
     </div></div>
   </section>
 
+  <div class="viewer" id="viewer">
+    <div class="img-wrap" id="viewStage"></div>
+    <div class="crop-tools" id="viewTools">
+      <span class="hint">Drag the corners to crop</span>
+      <button class="text-btn" data-act="reset" hidden>Reset crop</button>
+      <button class="text-btn" data-act="restore" hidden>Restore original</button>
+    </div>
+    <div class="actions">
+      <button class="btn" id="closeView">Close</button>
+      <button class="btn danger" id="delView">Delete</button>
+      <button class="btn primary" id="saveView">Save</button>
+    </div>
+  </div>
 </div>
 
-<div class="viewer" id="viewer">
-  <div class="img-wrap" id="viewStage"></div>
-  <div class="crop-tools" id="viewTools">
-    <span class="hint">Drag the corners to crop</span>
-    <button class="text-btn" data-act="reset" hidden>Reset crop</button>
-    <button class="text-btn" data-act="restore" hidden>Restore original</button>
-  </div>
-  <div class="actions">
-    <button class="btn" id="closeView">Close</button>
-    <button class="btn danger" id="delView">Delete</button>
-    <button class="btn primary" id="saveView">Save</button>
-  </div>
-</div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -746,6 +750,9 @@ function openViewer(name) {
   viewEditor?.destroy();
   viewEditor = mountEditor($("viewStage"), scan, { save: $("saveView"), tools: $("viewTools") });
 }
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && $("viewer").classList.contains("open")) $("closeView").click();
+});
 $("closeView").onclick = () => { $("viewer").classList.remove("open"); viewEditor?.destroy(); viewEditor = null; viewing = null; };
 $("delView").onclick = async () => {
   if (!confirm("Delete this scan?")) return;
