@@ -115,21 +115,22 @@
     overflow: hidden; }
   .thumb.pending .bar div { height: 100%; width: 0; background: var(--primary); transition: width .4s linear; }
   .thumb.pending .bar div.indeterminate { width: 30%; animation: slide 1.2s ease-in-out infinite; }
-  /* Actions shown when hovering a scan (mouse/trackpad only; touch taps open the viewer) */
-  .thumb .hover-actions { position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: 2px; padding: 4px;
-    background: rgba(0, 0, 0, .8); opacity: 0; transform: translateY(6px); pointer-events: none;
-    transition: opacity .12s, transform .12s; }
+  /* Actions shown when hovering a scan (mouse/trackpad only; touch taps open the viewer):
+     a centred vertical stack over the dimmed tile; clicking the dimmed area still opens the scan */
+  .thumb .hover-actions { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 4px; padding: 8px; background: rgba(0, 0, 0, .62); opacity: 0;
+    pointer-events: none; transition: opacity .12s; }
   @media (hover: hover) {
-    .thumb:not(.pending):hover .hover-actions, .thumb:focus-within .hover-actions {
-      opacity: 1; transform: none; pointer-events: auto; }
+    .thumb:not(.pending):hover .hover-actions, .thumb:focus-within .hover-actions { opacity: 1; pointer-events: auto; }
   }
   .selecting .thumb .hover-actions { display: none; }
-  .hover-actions button { flex: 1; min-width: 0; border: 0; background: transparent; color: #fff; cursor: pointer;
-    border-radius: var(--r-sm); padding: 6px 0 4px; font-size: 10px; font-weight: 500; letter-spacing: .2px;
-    display: flex; flex-direction: column; align-items: center; gap: 2px; }
-  .hover-actions button:hover, .hover-actions button:focus-visible { background: rgba(255, 255, 255, .14); outline: none; }
+  .hover-actions button { width: min(112px, 100%); border: 0; background: rgba(32, 32, 32, .92); color: #fff;
+    cursor: pointer; border-radius: var(--r-sm); padding: 7px 10px; font-size: 12px; font-weight: 500;
+    display: flex; align-items: center; gap: 8px; white-space: nowrap; overflow: hidden; }
+  .hover-actions button:hover, .hover-actions button:focus-visible { background: var(--primary); color: var(--on-primary); outline: none; }
   .hover-actions button.danger { color: var(--error); }
-  .hover-actions svg { width: 18px; height: 18px; fill: currentColor; }
+  .hover-actions button.danger:hover, .hover-actions button.danger:focus-visible { background: var(--error); color: #000; }
+  .hover-actions svg { width: 16px; height: 16px; fill: currentColor; flex: none; }
   .empty { color: var(--muted); text-align: center; padding: 30px 0; font-size: 14px; grid-column: 1 / -1; }
 
   .btn { flex: 1; border: 0; background: var(--tonal); color: var(--on-tonal); font-size: 15px; font-weight: 500;
