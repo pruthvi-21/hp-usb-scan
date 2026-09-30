@@ -18,4 +18,9 @@ if [ requirements.txt -nt .venv/.installed ]; then
   touch .venv/.installed
 fi
 
+# ./run.sh --check: just report whether a compatible HP printer is connected
+if [ "$1" = "--check" ]; then
+  exec .venv/bin/python hpscan.py --check
+fi
+
 exec .venv/bin/python -u server.py

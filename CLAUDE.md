@@ -5,8 +5,11 @@ A local web app for scanning from an **HP printer connected to a Mac over USB**,
 ## Run
 
 ```sh
-./run.sh   # creates .venv, installs requirements when they change, starts on :8080
+./run.sh           # creates .venv, installs requirements when they change, starts on :8080
+./run.sh --check   # same setup, then just reports whether a compatible printer is connected
 ```
+
+README.md is the user-facing setup/run guide; keep it in step with run.sh.
 
 It prints the LAN URL (IP and `.local`; some Android phones can't resolve `.local`). Only one process may hold the USB interface, so stop the server (`pkill -f server.py`) before running `hpscan.py` or other USB scripts directly.
 
