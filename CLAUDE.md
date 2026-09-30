@@ -34,7 +34,7 @@ Crops are four corners (TL, TR, BR, BL fractions). The server always crops from 
 
 Crops must stay convex: no corner may cross the diagonal of its neighbours, and every corner keeps at least `MIN_ANGLE` (8°). The cropper stops a drag at the furthest valid point, and the server rejects anything else; keep the two checks in sync.
 
-The cropper works like Google Photos' perspective tool: the frame stays a rectangle (the output's aspect) and the page is drawn already straightened under it, with the rest of the page dimmed around it. Dragging a frame corner picks the page point that becomes that corner; edges move a side; dragging inside pans. It's rendered with WebGL (exact per-pixel perspective; a 2D-canvas fallback exists). Don't use a CSS `matrix3d` warp for this: Chrome rasterizes large perspective layers in approximate tiles, which skews text and drops chunks of the page. The eye button hides the dimmed surroundings and handles.
+The crop preview (eye button) is drawn on a canvas by inverse-mapping each output pixel through the same homography. Don't switch it to a CSS `matrix3d` warp: the math is right, but Chrome rasterizes large perspective layers in approximate tiles, which skews text and drops chunks of the page.
 
 Save only applies the crop (no download); JPEG/PDF export lives on the tile hover actions.
 
