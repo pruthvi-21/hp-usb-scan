@@ -1,8 +1,9 @@
 """Scan from an HP printer over USB using HP's LEDM protocol (HTTP requests over a vendor USB
 interface, class FF/CC/00). Works with HP all-in-ones whose USB device ID lists LEDM on that
 interface (LEDMDIS:...USB#FF#CC#00...); tested on the DeskJet 2300 series."""
-import math, os, re, struct, sys, threading, time
+import io, math, os, re, struct, sys, threading, time
 import usb.core, usb.util, usb.backend.libusb1
+from PIL import Image, JpegImagePlugin
 
 HP_VENDOR = 0x03F0
 STALL_SECONDS = 45  # give up if the printer sends nothing for this long in the middle of a reply
@@ -280,6 +281,22 @@ class ScanProgress:
         return False
 
 
+def crop_to_paper(jpeg, width, height, dpi):
+    """Cut the top-left width x height (1/300 inch) out of a full-glass scan. Re-encodes with the
+    scan's own quantization tables and subsampling, so quality and size stay as the printer made them."""
+    with Image.open(io.BytesIO(jpeg)) as im:
+        w = min(im.width, round(width * dpi / 300))
+        h = min(im.height, round(height * dpi / 300))
+        if (w, h) == im.size:
+            return jpeg
+        opts = {"qtables": im.quantization, "dpi": (dpi, dpi)}
+        if im.mode != "L":
+            opts["subsampling"] = JpegImagePlugin.get_sampling(im)
+        buf = io.BytesIO()
+        im.crop((0, 0, w, h)).save(buf, "JPEG", **opts)
+        return buf.getvalue()
+
+
 def scan(dpi=300, color=True, size="a4", content="Document", log=print, cancel=None, progress=None):
     """Scan one page and return JPEG bytes.
 
@@ -287,7 +304,11 @@ def scan(dpi=300, color=True, size="a4", content="Document", log=print, cancel=N
     """
     progress = progress or ScanProgress()
     width, height = SIZES[size]
-    job = SCAN_JOB.format(dpi=dpi, width=width, height=height,
+    # Always scan the whole glass, then cut the paper size out ourselves. Asked for any smaller
+    # area, the firmware starts about 2 mm in from the left and top edges and enlarges the image
+    # ~1.6%, trimming the page; only the full-glass request returns the true edge-to-edge area.
+    full_w, full_h = SIZES["full"]
+    job = SCAN_JOB.format(dpi=dpi, width=full_w, height=full_h,
                           color="Color" if color else "Gray", content=content)
     s = LedmUsb()
     try:
@@ -345,7 +366,7 @@ def scan(dpi=300, color=True, size="a4", content="Document", log=print, cancel=N
         if status != 200:
             raise RuntimeError(f"image download failed: HTTP {status}")
         progress.phase = "done"
-        return image
+        return crop_to_paper(image, width, height, dpi)
     finally:
         s.close()
 

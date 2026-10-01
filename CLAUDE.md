@@ -27,11 +27,12 @@ It prints the LAN URL (IP and `.local`; some Android phones can't resolve `.loca
 - Scan flow: `GET /Scan/Status` (wait for `Idle`) → `POST /Scan/Jobs` (ScanJob XML, sizes in 1/300 in) → poll job URL until `PageState` `ReadyToUpload` → `GET` the `BinaryURL` (chunked JPEG that streams while the head moves).
 - **Cancel**: `PUT` the job URL with a `<JobState>Canceled</JobState>` Job XML *while the image is still streaming*. The printer ends the stream early, then answers the PUT. `LedmUsb.on_wait` exists for this.
 - **Progress**: the JPEG sets a restart interval of one MCU row, so counting `FFD0–FFD7` markers gives exact progress (`ScanProgress`). `/api/live.jpg` serves the partial JPEG for the live preview.
+- **Always scan the full glass.** For any scan area smaller than the whole glass (2550×3508 in 1/300 in), the firmware starts ~2 mm in from the left and top edges and enlarges the image ~1.6%, trimming the page. Only the full-glass request returns true edge-to-edge geometry (the bed-edge shadow is visible in its first few pixels). So `scan()` always requests the full glass and `crop_to_paper()` cuts the paper size from the top-left, re-encoding with the scan's own quantization tables (≈ lossless, same size). Small paper sizes therefore take as long as a full page.
 - The printer accepts **any dpi from 75 to 1200** even though ScanCaps lists only 75/100/200/300/600/1200. It resamples in firmware.
 - It returns **503** to a new job while the head is still returning after a scan, so `scan()` waits for `Idle` first.
 - **Stale replies desync everything.** A reply that isn't fully read (timeout, error, or two processes on the device at once) stays in the IN pipe and gets taken as the answer to the next request. `LedmUsb` drains the pipe every time it opens; keep that.
 - **Reset** (`POST /api/reset`, the ↻ button): sets `hpscan.abort` so any in-flight conversation raises `Aborted` and releases the USB lock, then `reset_scanner()` does a USB clear-halt + device reset (≈0.1 s on macOS, the printer reconnects at once), cancels scan jobs still open in `/Jobs/JobList`, and waits for Idle. A scan cut short returns `{"reset": true}`. Mid-reply stalls give up after `STALL_SECONDS` (45 s) instead of the 15-minute overall timeout.
-- Timing: A4 takes about 8 s at 300 dpi and about 70 s at 600 dpi. The warm-up before data flows is about 4 s.
+- Timing (every paper size, since the whole glass is scanned): about 8 s at 300 dpi and about 70 s at 600 dpi. The warm-up before data flows is about 4 s.
 
 ## Crop
 
